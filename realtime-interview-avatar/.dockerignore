@@ -1,0 +1,123 @@
+# ============================================================================
+# .dockerignore - Docker 빌드 시 제외할 파일/디렉토리
+# ============================================================================
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Docker
+docker-compose.yml
+docker-compose.*.yml
+Dockerfile
+.dockerignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.manifest
+*.spec
+.pytest_cache/
+.coverage
+.tox/
+.hypothesis/
+htmlcov/
+
+# Virtual Environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Data & Cache
+data/
+cache/
+temp/
+tmp/
+uploads/
+*.db
+*.sqlite
+*.sqlite3
+
+# Models (빌드 시 다운로드)
+models/*.pth
+models/*.safetensors
+models/*.onnx
+
+# Tests
+tests/
+test_*.py
+*_test.py
+pytest.ini
+.pytest_cache/
+
+# Documentation
+docs/
+*.md
+!README.md
+LICENSE
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+azure-pipelines.yml
+
+# Backup
+*.bak
+*.backup
+*.old
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Node (프론트엔드 빌드)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Misc
+*.pem
+*.key
+*.cert
+*.crt

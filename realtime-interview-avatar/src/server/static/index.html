@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 면접 아바타</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1>AI 면접 아바타</h1>
+            <div class="header-controls">
+                <div id="latencyDisplay" class="latency-badge" title="응답 지연시간">
+                    <span class="latency-icon">-</span>
+                    <span class="latency-value">-- ms</span>
+                </div>
+                <button id="themeToggle" class="theme-toggle-btn" aria-label="테마 전환">
+                    <span class="icon-sun">☀️</span>
+                    <span class="icon-moon">🌙</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Video Section -->
+            <section class="video-section">
+                <div class="video-container">
+                    <!-- Canvas for avatar rendering -->
+                    <canvas id="avatarCanvas" width="512" height="512"></canvas>
+
+                    <!-- Fallback image when not connected -->
+                    <div id="avatarPlaceholder" class="avatar-placeholder">
+                        <div class="placeholder-icon">👤</div>
+                        <p>면접을 시작하면 AI 아바타가 나타납니다</p>
+                    </div>
+
+                    <!-- Video overlay -->
+                    <div class="video-overlay">
+                        <div id="connectionStatus" class="status-badge">연결 대기 중</div>
+                    </div>
+
+                    <!-- Speaking indicator -->
+                    <div id="avatarSpeakingIndicator" class="avatar-speaking-indicator hidden">
+                        <div class="speaking-waves">
+                            <span></span><span></span><span></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Status Indicators -->
+                <div class="status-indicators">
+                    <div class="status-item" id="listeningStatus">
+                        <span class="status-icon">🎤</span>
+                        <span class="status-text">듣는 중</span>
+                    </div>
+                    <div class="status-item" id="processingStatus">
+                        <span class="status-icon">⚙️</span>
+                        <span class="status-text">처리 중</span>
+                    </div>
+                    <div class="status-item" id="speakingStatus">
+                        <span class="status-icon">💬</span>
+                        <span class="status-text">말하는 중</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Control Panel -->
+            <section class="control-panel">
+                <div class="controls">
+                    <button id="startBtn" class="btn btn-primary">
+                        <span class="btn-icon">▶️</span>
+                        <span class="btn-text">면접 시작</span>
+                    </button>
+                    <button id="stopBtn" class="btn btn-danger" disabled>
+                        <span class="btn-icon">⏹️</span>
+                        <span class="btn-text">면접 종료</span>
+                    </button>
+                    <button id="micToggle" class="btn btn-secondary" disabled>
+                        <span class="btn-icon" id="micIcon">🔇</span>
+                        <span class="btn-text" id="micText">마이크 켜기</span>
+                    </button>
+                </div>
+
+                <!-- Volume Indicator -->
+                <div class="volume-indicator">
+                    <label>마이크 입력</label>
+                    <div class="volume-bar">
+                        <div id="volumeLevel" class="volume-level"></div>
+                    </div>
+                </div>
+
+                <!-- Interview Info -->
+                <div class="interview-info">
+                    <div class="info-item">
+                        <span class="info-label">면접 단계</span>
+                        <span id="interviewStage" class="info-value">대기 중</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">질문 수</span>
+                        <span id="questionCount" class="info-value">0</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">경과 시간</span>
+                        <span id="elapsedTime" class="info-value">00:00</span>
+                    </div>
+                </div>
+
+                <!-- Text Input (alternative to voice) -->
+                <div class="text-input-section">
+                    <label>텍스트로 답변하기</label>
+                    <div class="text-input-wrapper">
+                        <input type="text" id="textInput" placeholder="답변을 입력하세요..." disabled>
+                        <button id="sendTextBtn" class="btn btn-primary btn-small" disabled>
+                            전송
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Transcript Section -->
+            <section class="transcript-section">
+                <h2>대화 내용</h2>
+                <div id="transcriptContainer" class="transcript-container">
+                    <div class="transcript-placeholder">
+                        면접이 시작되면 대화 내용이 여기에 표시됩니다.
+                    </div>
+                </div>
+
+                <!-- Live Subtitle -->
+                <div id="liveSubtitle" class="live-subtitle"></div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>실시간 AI 면접 시스템 | Powered by MuseTalk & Whisper</p>
+        </footer>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="loading-overlay hidden">
+        <div class="loading-spinner"></div>
+        <p class="loading-text">연결 중...</p>
+    </div>
+
+    <!-- Error Modal -->
+    <div id="errorModal" class="modal hidden">
+        <div class="modal-content">
+            <h3>오류 발생</h3>
+            <p id="errorMessage"></p>
+            <button id="errorClose" class="btn btn-primary">확인</button>
+        </div>
+    </div>
+
+    <!-- Audio Player (hidden, for TTS playback) -->
+    <audio id="audioPlayer" style="display: none;"></audio>
+
+    <script src="main.js"></script>
+</body>
+</html>

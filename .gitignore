@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Models (large files)
+*.pth
+*.onnx
+*.safetensors
+*.pt
+*.bin
+models/
+checkpoints/
+
+# Temp files
+nul
+temp_mmcv/
+*.tmp
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Output
+results/
+output/
+*.mp4
+*.wav
+*.mp3
+
+# Env
+.env
+.env.local
+
+# Cache
+.cache/
+*.cache

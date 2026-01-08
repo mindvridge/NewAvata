@@ -1,0 +1,96 @@
+# Realtime Interview Avatar Configuration
+
+# Application Settings
+app:
+  name: "Realtime Interview Avatar"
+  version: "0.1.0"
+  debug: true
+  log_level: "INFO"
+
+# Server Configuration
+server:
+  host: "0.0.0.0"
+  port: 8000
+  cors_origins:
+    - "http://localhost:3000"
+    - "http://localhost:8000"
+
+# LLM Configuration
+llm:
+  provider: "openai"  # openai or anthropic
+  model: "gpt-4o"  # Updated to latest GPT-4o
+  temperature: 0.7
+  max_tokens: 2048
+  streaming: true
+
+# Deepgram STT Configuration
+stt:
+  provider: "deepgram"
+  model: "nova-3"  # Updated to latest Nova-3
+  language: "ko"
+  encoding: "linear16"
+  sample_rate: 16000
+  channels: 1
+  punctuate: true
+  interim_results: true
+
+# ElevenLabs TTS Configuration
+tts:
+  provider: "elevenlabs"
+  model: "eleven_multilingual_v2"
+  voice_id: ""  # Set in .env
+  stability: 0.5
+  similarity_boost: 0.75
+  style: 0.0
+  use_speaker_boost: true
+  optimize_streaming_latency: 3
+
+# MuseTalk Avatar Configuration
+avatar:
+  model_path: "./models/musetalk"
+  image_path: "./assets/images/avatar.jpg"
+  fps: 25
+  resolution:
+    width: 512
+    height: 512
+  batch_size: 8
+  use_float16: true
+
+# Pipeline Configuration
+pipeline:
+  buffer_size: 1024
+  sample_rate: 16000
+  channels: 1
+  audio_format: "s16le"
+  max_queue_size: 100
+
+# Interview Configuration
+interview:
+  max_duration: 7200  # 2 hours
+  timeout: 3600  # 1 hour
+  question_delay: 1.0  # seconds
+  max_questions: 50
+  thinking_time: 30  # seconds per question
+
+  # Interview prompts
+  system_prompt: |
+    You are a professional interviewer conducting a job interview.
+    Be friendly, professional, and ask relevant questions based on the candidate's responses.
+    Speak naturally in Korean.
+
+  welcome_message: "안녕하세요! 면접을 시작하겠습니다. 간단한 자기소개 부탁드립니다."
+
+# Storage Configuration
+storage:
+  recording_dir: "./recordings"
+  cache_dir: "./cache"
+  max_recording_size: 1073741824  # 1GB
+  cleanup_after_days: 7
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>"
+  rotation: "100 MB"
+  retention: "10 days"
+  compression: "zip"

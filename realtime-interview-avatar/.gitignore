@@ -1,0 +1,113 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment variables
+.env
+.env.local
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# Models and weights
+models/
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+
+# Data and assets
+recordings/
+cache/
+tmp/
+temp/
+*.wav
+*.mp3
+*.mp4
+*.avi
+*.mov
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Docker
+*.dockerfile.swp
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Project specific
+assets/images/*
+!assets/images/.gitkeep
+assets/audio/*
+!assets/audio/.gitkeep
+
+# 추가 환경 변수 파일
+.env.production
+.env.*.local
+
+# API 키와 인증 정보
+*.pem
+*.key
+*.cert
+credentials.json
+gcs-credentials.json
+service-account.json
+api-keys.txt
+
+# 비밀 정보
+secrets/
+.secrets/

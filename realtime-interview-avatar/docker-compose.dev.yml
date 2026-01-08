@@ -1,0 +1,62 @@
+# ============================================================================
+# Docker Compose Override for Development
+# 사용: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+# ============================================================================
+
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: builder  # 개발용 빌더 스테이지 사용
+    environment:
+      - APP_ENV=development
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+      - ENABLE_RELOAD=true
+    volumes:
+      # 소스 코드 핫 리로딩
+      - ./src:/app/src
+      - ./config:/app/config
+      - ./scripts:/app/scripts
+
+      # 데이터 (로컬 디렉토리)
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./uploads:/app/uploads
+    command: >
+      python -m uvicorn server.app:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+      --log-level debug
+    ports:
+      # 디버깅 포트 추가
+      - "8000:8000"
+      - "5678:5678"  # Python debugpy
+
+  redis:
+    ports:
+      - "6379:6379"
+    # Redis Commander (Redis GUI)
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --loglevel debug
+
+  # Redis Commander - Redis 모니터링 GUI
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: interview-redis-commander
+    restart: unless-stopped
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    networks:
+      - interview-network
