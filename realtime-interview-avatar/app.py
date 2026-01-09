@@ -352,6 +352,9 @@ ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY', '')
 # CosyVoice 설정
 COSYVOICE_MODEL_PATH = os.getenv('COSYVOICE_MODEL_PATH', 'c:/NewAvata/NewAvata/CosyVoice/pretrained_models/CosyVoice2-0.5B')
 COSYVOICE_PROMPT_AUDIO = 'assets/audio/ElevenLabs_2025-05-09T07_25_56_Psychological Consultant Woman_gen_sp100_s94_sb75_se0_b_m2.mp3'
+COSYVOICE_PROMPT_TEXT = "안녕하세요. 저는 심리 상담사입니다."
+COSYVOICE_SPK_ID = 'default_speaker'  # 프리로드된 화자 ID
+cosyvoice_prompt_wav_path = None  # 캐싱된 프롬프트 오디오 경로
 
 
 def get_available_avatars():
@@ -444,8 +447,8 @@ def api_tts_engines():
 
 
 def load_cosyvoice_model():
-    """CosyVoice 모델 로드"""
-    global cosyvoice_engine, cosyvoice_loaded
+    """CosyVoice 모델 로드 및 화자 프리로딩"""
+    global cosyvoice_engine, cosyvoice_loaded, cosyvoice_prompt_wav_path
 
     if cosyvoice_loaded and cosyvoice_engine is not None:
         return
@@ -455,8 +458,26 @@ def load_cosyvoice_model():
         from cosyvoice.cli.cosyvoice import CosyVoice2
 
         cosyvoice_engine = CosyVoice2(COSYVOICE_MODEL_PATH, fp16=True)
-        cosyvoice_loaded = True
         print(f"CosyVoice 모델 로드 완료! (샘플레이트: {cosyvoice_engine.sample_rate})")
+
+        # 프롬프트 오디오 사전 변환 (16kHz WAV로 캐싱)
+        print("프롬프트 오디오 사전 변환 중...")
+        cosyvoice_prompt_wav_path = "assets/audio/cosyvoice_prompt_16k.wav"
+        subprocess.run(
+            f'ffmpeg -y -i "{COSYVOICE_PROMPT_AUDIO}" -ar 16000 -t 15 "{cosyvoice_prompt_wav_path}"',
+            shell=True, capture_output=True
+        )
+
+        # 화자 정보 프리로딩 (add_zero_shot_spk로 speaker embedding 캐싱)
+        print("화자 정보 프리로딩 중 (add_zero_shot_spk)...")
+        cosyvoice_engine.add_zero_shot_spk(
+            prompt_text=COSYVOICE_PROMPT_TEXT,
+            prompt_wav=cosyvoice_prompt_wav_path,
+            zero_shot_spk_id=COSYVOICE_SPK_ID
+        )
+        print(f"화자 '{COSYVOICE_SPK_ID}' 프리로딩 완료!")
+
+        cosyvoice_loaded = True
 
     except Exception as e:
         print(f"CosyVoice 모델 로드 실패: {e}")
@@ -522,8 +543,8 @@ def generate_tts_audio(text, engine, voice, output_path):
         return False
 
     elif engine == 'cosyvoice':
-        # CosyVoice 2.0 TTS
-        global cosyvoice_engine, cosyvoice_loaded
+        # CosyVoice 2.0 TTS (프리로드된 화자 사용으로 속도 최적화)
+        global cosyvoice_engine, cosyvoice_loaded, cosyvoice_prompt_wav_path
 
         try:
             if not cosyvoice_loaded or cosyvoice_engine is None:
@@ -534,27 +555,17 @@ def generate_tts_audio(text, engine, voice, output_path):
                     print(f"CosyVoice 로드 실패")
                     return False
 
-            # 프롬프트 오디오 준비 (15초로 제한)
-            prompt_audio_path = COSYVOICE_PROMPT_AUDIO
-            prompt_wav_path = "assets/audio/prompt_16k.wav"
+            print(f"CosyVoice Zero-shot TTS 생성 중 (캐싱된 화자)... (텍스트: {text[:30]}...)")
+            start_time = time.time()
 
-            subprocess.run(
-                f'ffmpeg -y -i "{prompt_audio_path}" -ar 16000 -t 15 "{prompt_wav_path}"',
-                shell=True, capture_output=True
-            )
-
-            # 프롬프트 텍스트
-            prompt_text = "안녕하세요. 저는 심리 상담사입니다."
-
-            print(f"CosyVoice Zero-shot TTS 생성 중... (텍스트: {text[:30]}...)")
-
-            # 비스트리밍 모드로 오디오 생성 - GPU 효율 최적화
+            # 프리로드된 화자 ID 사용 (zero_shot_spk_id 파라미터로 캐싱된 speaker embedding 재사용)
             output_audio = None
             for result in cosyvoice_engine.inference_zero_shot(
                 tts_text=text,
-                prompt_text=prompt_text,
-                prompt_wav=prompt_wav_path,
-                stream=False,  # 비스트리밍으로 GPU 효율 최적화
+                prompt_text=COSYVOICE_PROMPT_TEXT,
+                prompt_wav=cosyvoice_prompt_wav_path,
+                zero_shot_spk_id=COSYVOICE_SPK_ID,  # 캐싱된 화자 ID 사용
+                stream=False,
                 speed=1.0
             ):
                 if output_audio is None:
@@ -562,9 +573,12 @@ def generate_tts_audio(text, engine, voice, output_path):
                 else:
                     output_audio = torch.cat([output_audio, result['tts_speech']], dim=1)
 
-            print(f"CosyVoice TTS 생성 완료")
-
+            elapsed = time.time() - start_time
             if output_audio is not None:
+                speech_len = output_audio.shape[1] / cosyvoice_engine.sample_rate
+                rtf = elapsed / speech_len
+                print(f"CosyVoice TTS 생성 완료 (길이: {speech_len:.2f}초, RTF: {rtf:.3f})")
+
                 # WAV로 저장
                 torchaudio.save(str(output_path), output_audio, cosyvoice_engine.sample_rate)
 
