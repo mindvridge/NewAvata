@@ -1,0 +1,991 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 면접관</title>
+    <link rel="icon" href="data:,">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #fff;
+        }
+
+        .container {
+            max-width: 2400px;
+            margin: 0 auto;
+            padding: 40px;
+        }
+
+        header {
+            text-align: center;
+            padding: 20px 0;
+        }
+
+        header h1 {
+            font-size: 3em;
+            background: linear-gradient(90deg, #00d2ff, #3a7bd5);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+        }
+
+        header p {
+            color: #888;
+            font-size: 1.4em;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1.5fr;
+            gap: 40px;
+            margin-top: 30px;
+        }
+
+        .panel {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 24px;
+            padding: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .panel h2 {
+            font-size: 1.8em;
+            margin-bottom: 20px;
+            color: #00d2ff;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 10px;
+            color: #aaa;
+            font-size: 1.2em;
+        }
+
+        select, button {
+            width: 100%;
+            padding: 16px 24px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+            font-size: 1.2em;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        select:hover, select:focus {
+            border-color: #00d2ff;
+            outline: none;
+        }
+
+        select option {
+            background: #1a1a2e;
+            color: #fff;
+        }
+
+        button.primary {
+            background: linear-gradient(90deg, #00d2ff, #3a7bd5);
+            border: none;
+            font-weight: bold;
+        }
+
+        button.primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(0, 210, 255, 0.4);
+        }
+
+        button.primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        button.secondary {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        button.secondary:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .tts-options {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            padding: 20px;
+            background: rgba(0, 210, 255, 0.1);
+            border-radius: 12px;
+            border: 1px solid rgba(0, 210, 255, 0.3);
+            margin-bottom: 20px;
+        }
+
+        .tts-options .form-group {
+            margin-bottom: 0;
+        }
+
+        .tts-options label {
+            font-size: 1em;
+            color: #00d2ff;
+        }
+
+        .tts-options select {
+            padding: 12px 16px;
+            font-size: 1em;
+        }
+
+        /* 대화 영역 */
+        .chat-container {
+            display: flex;
+            flex-direction: column;
+            height: 300px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 16px;
+            margin-bottom: 20px;
+            overflow: hidden;
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+        }
+
+        .chat-message {
+            margin-bottom: 15px;
+            padding: 12px 18px;
+            border-radius: 12px;
+            max-width: 85%;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .chat-message.user {
+            background: linear-gradient(90deg, #3a7bd5, #00d2ff);
+            margin-left: auto;
+            text-align: right;
+        }
+
+        .chat-message.assistant {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .chat-message.system {
+            background: rgba(255, 193, 7, 0.2);
+            border: 1px solid rgba(255, 193, 7, 0.3);
+            text-align: center;
+            max-width: 100%;
+            font-size: 0.9em;
+            color: #ffc107;
+        }
+
+        .chat-input-container {
+            display: flex;
+            gap: 10px;
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.2);
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .chat-input {
+            flex: 1;
+            padding: 14px 20px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+            font-size: 1.1em;
+            font-family: inherit;
+        }
+
+        .chat-input:focus {
+            border-color: #00d2ff;
+            outline: none;
+        }
+
+        .chat-input::placeholder {
+            color: #666;
+        }
+
+        .send-btn {
+            width: auto;
+            padding: 14px 30px;
+            white-space: nowrap;
+        }
+
+        /* 비디오 영역 */
+        .video-container {
+            position: relative;
+            background: #000;
+            border-radius: 24px;
+            overflow: hidden;
+            width: 100%;
+            height: 650px;
+        }
+
+        .video-container video {
+            position: absolute;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            height: 100%;
+            max-width: 100%;
+            object-fit: contain;
+        }
+
+        #idleVideo, #resultVideo, #streamCanvas {
+            transition: none !important;
+            animation: none !important;
+        }
+
+        #idleVideo {
+            z-index: 2;
+            visibility: visible;
+        }
+
+        #resultVideo {
+            z-index: 3;
+            visibility: hidden;
+        }
+
+        #streamCanvas {
+            position: absolute;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            height: 100%;
+            max-width: 100%;
+            object-fit: contain;
+            z-index: 4;
+            visibility: hidden;
+            background: transparent;
+        }
+
+        .video-placeholder {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #555;
+            font-size: 1.8em;
+        }
+
+        .progress-container {
+            margin-top: 20px;
+        }
+
+        .progress-bar {
+            height: 12px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #00d2ff, #3a7bd5);
+            width: 0%;
+            transition: width 0.3s;
+        }
+
+        .status-text {
+            margin-top: 15px;
+            font-size: 1.2em;
+            color: #888;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .elapsed-time {
+            color: #00d2ff;
+            font-weight: bold;
+            font-size: 1.3em;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .stat-item {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 20px;
+            border-radius: 16px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 2.2em;
+            font-weight: bold;
+            color: #00d2ff;
+        }
+
+        .stat-label {
+            font-size: 1em;
+            color: #888;
+            margin-top: 5px;
+        }
+
+        .clear-btn {
+            margin-top: 15px;
+            padding: 12px 20px;
+            font-size: 1em;
+        }
+
+        @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>AI Interview</h1>
+            <p>AI 면접관과 실시간 면접 연습</p>
+        </header>
+
+        <div class="main-content">
+            <div class="panel">
+                <h2>면접</h2>
+
+                <div class="form-group">
+                    <label>아바타 선택</label>
+                    <select id="avatarSelect">
+                        <option value="">로딩 중...</option>
+                    </select>
+                </div>
+
+                <div class="tts-options">
+                    <div class="form-group">
+                        <label>TTS 엔진</label>
+                        <select id="ttsEngineSelect" onchange="updateVoiceOptions()">
+                            <option value="">로딩 중...</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label>음성</label>
+                        <select id="ttsVoiceSelect">
+                            <option value="">엔진 선택</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="chat-container">
+                    <div class="chat-messages" id="chatMessages">
+                        <div class="chat-message system">
+                            "면접 시작" 버튼을 눌러 면접을 시작하세요
+                        </div>
+                    </div>
+                    <div class="chat-input-container">
+                        <input type="text" class="chat-input" id="chatInput"
+                               placeholder="답변을 입력하세요..."
+                               onkeypress="handleKeyPress(event)">
+                        <button class="primary send-btn" id="sendBtn" onclick="sendMessage()">
+                            전송
+                        </button>
+                    </div>
+                </div>
+
+                <div class="button-group" style="display: flex; gap: 10px; margin-top: 15px;">
+                    <button class="primary" id="startInterviewBtn" onclick="startInterview()">
+                        면접 시작
+                    </button>
+                    <button class="secondary" onclick="clearHistory()">
+                        초기화
+                    </button>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>면접관</h2>
+
+                <div class="video-container">
+                    <video id="idleVideo" src="/assets/images/a24ca21b-0d02-49f0-99a7-d737c5ca6058.mp4" loop muted autoplay playsinline></video>
+                    <canvas id="streamCanvas"></canvas>
+                    <video id="resultVideo" playsinline></video>
+                    <audio id="streamAudio" style="display: none;"></audio>
+                </div>
+
+                <div class="progress-container" id="progressContainer" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <div class="status-text">
+                        <span id="statusText">준비 중...</span>
+                        <span id="elapsedTime" class="elapsed-time"></span>
+                    </div>
+                </div>
+
+                <div class="stats" id="statsContainer" style="display: none;">
+                    <div class="stat-item">
+                        <div class="stat-value" id="statLLM">-</div>
+                        <div class="stat-label">LLM (초)</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="statTTS">-</div>
+                        <div class="stat-label">TTS (초)</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="statTotal">-</div>
+                        <div class="stat-label">총 시간 (초)</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let isGenerating = false;
+        let ttsEngines = {};
+        let llmStartTime = null;
+        let isVideoPlaying = false;  // 비디오 재생 중 플래그
+        let isStreaming = false;  // 스트리밍 모드 플래그
+        let streamingMode = true;  // true: 스트리밍 모드, false: 기존 모드
+        let streamCtx = null;  // Canvas context
+        let streamFps = 25;  // 스트리밍 FPS
+
+        // WebSocket 이벤트
+        socket.on('connect', () => {
+            console.log('Connected to server');
+        });
+
+        socket.on('status', (data) => {
+            document.getElementById('statusText').textContent = data.message;
+            document.getElementById('progressFill').style.width = data.progress + '%';
+
+            if (data.elapsed !== undefined) {
+                const elapsed = data.elapsed;
+                const seconds = elapsed.toFixed(1);
+                document.getElementById('elapsedTime').textContent = `${seconds}초`;
+            }
+        });
+
+        socket.on('complete', (data) => {
+            isGenerating = false;
+            updateUIState(false);
+
+            if (data.total_time !== undefined) {
+                document.getElementById('elapsedTime').textContent = `완료: ${data.total_time.toFixed(1)}초`;
+            }
+
+            // 이미 비디오가 재생 중이면 무시 (중복 방지)
+            if (isVideoPlaying) {
+                console.log('Video already playing, ignoring duplicate complete event');
+                return;
+            }
+            isVideoPlaying = true;
+
+            const idleVideo = document.getElementById('idleVideo');
+            const resultVideo = document.getElementById('resultVideo');
+
+            // 이전 재생 중인 비디오 정리
+            resultVideo.pause();
+            resultVideo.currentTime = 0;
+            resultVideo.oncanplaythrough = null;
+            resultVideo.ontimeupdate = null;
+            resultVideo.onended = null;
+
+            // idle 비디오는 항상 음소거 상태 유지
+            idleVideo.muted = true;
+
+            // resultVideo 준비
+            resultVideo.style.visibility = 'hidden';
+            resultVideo.muted = false;
+            resultVideo.src = '/video/output_with_audio.mp4?' + Date.now();
+
+            // 비디오가 충분히 버퍼링되면
+            resultVideo.oncanplaythrough = () => {
+                resultVideo.oncanplaythrough = null;
+                // 립싱크를 보이게 하고 재생 시작 (z-index가 높아서 idle 위에 표시됨)
+                resultVideo.style.visibility = 'visible';
+                resultVideo.play().catch(err => {
+                    console.error('Video play failed:', err);
+                    isVideoPlaying = false;
+                });
+            };
+
+            // 비디오 로드 시작
+            resultVideo.load();
+
+            // 립싱크 비디오 완전 종료 후 정리
+            resultVideo.onended = () => {
+                resultVideo.pause();
+                resultVideo.muted = true;
+                resultVideo.currentTime = 0;
+                resultVideo.style.visibility = 'hidden';
+                resultVideo.src = '';
+                isVideoPlaying = false;
+            };
+
+            // 통계 표시
+            document.getElementById('statsContainer').style.display = 'grid';
+            if (data.total_time !== undefined) {
+                document.getElementById('statTotal').textContent = data.total_time.toFixed(1);
+            }
+        });
+
+        socket.on('error', (data) => {
+            isGenerating = false;
+            updateUIState(false);
+            document.getElementById('statusText').textContent = '오류: ' + data.message;
+            addMessage('system', '오류가 발생했습니다: ' + data.message);
+        });
+
+        // ========== 스트리밍 이벤트 ==========
+        socket.on('stream_status', (data) => {
+            document.getElementById('statusText').textContent = data.message;
+            if (data.progress !== undefined) {
+                document.getElementById('progressFill').style.width = data.progress + '%';
+            }
+            if (data.elapsed !== undefined) {
+                document.getElementById('elapsedTime').textContent = `${data.elapsed.toFixed(1)}초`;
+            }
+        });
+
+        // ========== 스트리밍 이벤트 (단일 오디오) ==========
+        let streamFrameBuffer = [];  // 프레임 버퍼
+        let streamAudio = null;      // 스트리밍 오디오
+        let isStreamPlaying = false; // 스트리밍 재생 중
+        const BUFFER_THRESHOLD = 30; // 버퍼 임계값
+
+        socket.on('stream_audio', (data) => {
+            console.log('Stream audio:', data);
+            // 오디오 준비
+            streamAudio = new Audio(data.audio_url);
+            streamAudio.preload = 'auto';
+
+            // 버퍼가 충분하면 재생 시작
+            if (streamFrameBuffer.length >= BUFFER_THRESHOLD && !isStreamPlaying) {
+                startStreamPlayback();
+            }
+        });
+
+        socket.on('stream_frame', (data) => {
+            if (!isStreaming) return;
+
+            const canvas = document.getElementById('streamCanvas');
+
+            // FPS 저장
+            if (data.fps) streamFps = data.fps;
+
+            // 프레임을 버퍼에 추가
+            const img = new Image();
+            img.onload = () => {
+                streamFrameBuffer[data.index] = img;
+
+                // 첫 프레임에서 Canvas 크기 설정
+                if (data.index === 0) {
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    streamCtx = canvas.getContext('2d');
+                }
+
+                // 버퍼 상태 표시
+                const bufferCount = streamFrameBuffer.filter(f => f).length;
+                document.getElementById('statusText').textContent =
+                    `버퍼링 ${bufferCount}/${data.total} 프레임`;
+
+                // 버퍼가 충분하고 오디오 준비되면 재생 시작
+                if (bufferCount >= BUFFER_THRESHOLD && streamAudio && !isStreamPlaying) {
+                    startStreamPlayback();
+                }
+            };
+            img.src = 'data:image/jpeg;base64,' + data.frame;
+        });
+
+        // 스트리밍 재생 시작
+        function startStreamPlayback() {
+            if (isStreamPlaying) return;
+            isStreamPlaying = true;
+
+            const canvas = document.getElementById('streamCanvas');
+            const idleVideo = document.getElementById('idleVideo');
+
+            console.log('Starting stream playback, buffer:', streamFrameBuffer.length);
+
+            // Canvas 표시
+            canvas.style.visibility = 'visible';
+            idleVideo.style.visibility = 'hidden';
+
+            document.getElementById('statusText').textContent = '재생 중...';
+
+            // 오디오 재생
+            streamAudio.play().then(() => {
+                // 오디오 시간 기반 프레임 렌더링
+                renderStreamFrame();
+            }).catch(err => {
+                console.error('Audio play failed:', err);
+                isStreamPlaying = false;
+            });
+
+            // 오디오 종료 시 idle로 복귀
+            streamAudio.onended = () => {
+                console.log('Stream audio ended');
+                isStreamPlaying = false;
+
+                setTimeout(() => {
+                    if (!isStreamPlaying) {
+                        canvas.style.visibility = 'hidden';
+                        idleVideo.style.visibility = 'visible';
+                    }
+                }, 100);
+            };
+        }
+
+        // 프레임 렌더링 (오디오 동기화)
+        function renderStreamFrame() {
+            if (!streamAudio || streamAudio.paused || streamAudio.ended) return;
+
+            const currentTime = streamAudio.currentTime;
+            const targetFrameIndex = Math.floor(currentTime * streamFps);
+
+            if (streamFrameBuffer[targetFrameIndex]) {
+                streamCtx.drawImage(streamFrameBuffer[targetFrameIndex], 0, 0);
+            }
+
+            requestAnimationFrame(renderStreamFrame);
+        }
+
+        // 스트리밍 초기화 (새 요청 시)
+        function resetStreamState() {
+            streamFrameBuffer = [];
+            streamAudio = null;
+            isStreamPlaying = false;
+            isStreaming = true;
+
+            const canvas = document.getElementById('streamCanvas');
+            streamCtx = canvas.getContext('2d');
+            canvas.style.visibility = 'hidden';
+        }
+
+        socket.on('stream_complete', (data) => {
+            console.log('Stream complete:', data);
+            isStreaming = false;
+            isGenerating = false;
+            updateUIState(false);
+
+            document.getElementById('elapsedTime').textContent = `완료: ${data.total_time.toFixed(1)}초`;
+            document.getElementById('statsContainer').style.display = 'grid';
+            document.getElementById('statTotal').textContent = data.total_time.toFixed(1);
+            document.getElementById('statusText').textContent =
+                `완료 (${data.total_frames}프레임, ${data.total_time.toFixed(1)}초)`;
+        });
+
+        socket.on('stream_error', (data) => {
+            console.error('Stream error:', data);
+            isStreaming = false;
+            isGenerating = false;
+            isStreamPlaying = false;
+            updateUIState(false);
+
+            const canvas = document.getElementById('streamCanvas');
+            const idleVideo = document.getElementById('idleVideo');
+            canvas.style.visibility = 'hidden';
+            idleVideo.style.visibility = 'visible';
+
+            document.getElementById('statusText').textContent = '오류: ' + data.message;
+            addMessage('system', '스트리밍 오류: ' + data.message);
+        });
+
+        // UI 상태 업데이트
+        function updateUIState(generating) {
+            document.getElementById('sendBtn').disabled = generating;
+            document.getElementById('sendBtn').textContent = generating ? '생성 중...' : '전송';
+            document.getElementById('chatInput').disabled = generating;
+        }
+
+        // 옵션 로드
+        async function loadOptions() {
+            try {
+                // 아바타 로드
+                const avatarsRes = await fetch('/api/avatars');
+                const avatars = await avatarsRes.json();
+                const avatarSelect = document.getElementById('avatarSelect');
+                avatarSelect.innerHTML = avatars.length > 0
+                    ? avatars.map(a => `<option value="${a.path}">${a.name}</option>`).join('')
+                    : '<option value="">사전 계산된 아바타 없음</option>';
+
+                // TTS 엔진 로드
+                const enginesRes = await fetch('/api/tts_engines');
+                const enginesArray = await enginesRes.json();
+                // 배열을 id 기반 객체로 변환
+                ttsEngines = {};
+                enginesArray.forEach(engine => {
+                    ttsEngines[engine.id] = engine;
+                });
+                const engineSelect = document.getElementById('ttsEngineSelect');
+                engineSelect.innerHTML = enginesArray
+                    .map(engine => {
+                        const disabled = !engine.available ? ' disabled' : '';
+                        const suffix = !engine.available ? ' (API 키 필요)' : '';
+                        return `<option value="${engine.id}"${disabled}>${engine.name}${suffix}</option>`;
+                    }).join('');
+
+                updateVoiceOptions();
+
+            } catch (e) {
+                console.error('Failed to load options:', e);
+            }
+        }
+
+        function updateVoiceOptions() {
+            const engineId = document.getElementById('ttsEngineSelect').value;
+            const voiceSelect = document.getElementById('ttsVoiceSelect');
+
+            if (!engineId || !ttsEngines[engineId]) {
+                voiceSelect.innerHTML = '<option value="">엔진 선택</option>';
+                return;
+            }
+
+            const voices = ttsEngines[engineId].voices;
+            voiceSelect.innerHTML = Object.entries(voices)
+                .map(([id, name]) => `<option value="${id}">${name}</option>`)
+                .join('');
+        }
+
+        // 메시지 추가
+        function addMessage(role, content) {
+            const messagesDiv = document.getElementById('chatMessages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `chat-message ${role}`;
+            messageDiv.textContent = content;
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        // 메시지 전송
+        async function sendMessage() {
+            if (isGenerating) return;
+
+            const input = document.getElementById('chatInput');
+            const message = input.value.trim();
+
+            if (!message) return;
+
+            const avatarPath = document.getElementById('avatarSelect').value;
+            if (!avatarPath) {
+                alert('아바타를 선택해주세요.');
+                return;
+            }
+
+            // 사용자 메시지 표시
+            addMessage('user', message);
+            input.value = '';
+
+            isGenerating = true;
+            updateUIState(true);
+            document.getElementById('progressContainer').style.display = 'block';
+            document.getElementById('progressFill').style.width = '0%';
+            document.getElementById('statusText').textContent = 'LLM 응답 생성 중...';
+            document.getElementById('elapsedTime').textContent = '';
+
+            llmStartTime = Date.now();
+
+            try {
+                // 1. LLM 응답 생성
+                const chatRes = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: message })
+                });
+                const chatData = await chatRes.json();
+
+                if (chatData.error) {
+                    addMessage('system', chatData.error);
+                    isGenerating = false;
+                    updateUIState(false);
+                    return;
+                }
+
+                const llmTime = (Date.now() - llmStartTime) / 1000;
+                document.getElementById('statLLM').textContent = llmTime.toFixed(1);
+
+                // AI 응답 표시
+                addMessage('assistant', chatData.response);
+
+                // 2. 립싱크 생성
+                const ttsEngine = document.getElementById('ttsEngineSelect').value;
+                const ttsVoice = document.getElementById('ttsVoiceSelect').value;
+
+                if (streamingMode) {
+                    // 스트리밍 상태 초기화
+                    resetStreamState();
+                    document.getElementById('statusText').textContent = '스트리밍 생성 시작...';
+                    await fetch('/api/generate_streaming', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            avatar_path: avatarPath,
+                            text: chatData.response,
+                            tts_engine: ttsEngine,
+                            tts_voice: ttsVoice
+                        })
+                    });
+                } else {
+                    // 기존 API 사용 (일반 모드)
+                    document.getElementById('statusText').textContent = '일반 모드 - 생성 중...';
+                    await fetch('/api/generate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            avatar_path: avatarPath,
+                            text: chatData.response,
+                            tts_engine: ttsEngine,
+                            tts_voice: ttsVoice
+                        })
+                    });
+                }
+
+            } catch (e) {
+                console.error('Send failed:', e);
+                addMessage('system', '오류가 발생했습니다.');
+                isGenerating = false;
+                updateUIState(false);
+            }
+        }
+
+        // 엔터키 처리
+        function handleKeyPress(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendMessage();
+            }
+        }
+
+        // 면접 시작
+        async function startInterview() {
+            if (isGenerating) return;
+
+            const avatarPath = document.getElementById('avatarSelect').value;
+            if (!avatarPath) {
+                alert('아바타를 선택해주세요.');
+                return;
+            }
+
+            // 대화 초기화
+            await fetch('/api/clear_history', { method: 'POST' });
+            const messagesDiv = document.getElementById('chatMessages');
+            messagesDiv.innerHTML = '<div class="chat-message system">면접이 시작되었습니다.</div>';
+
+            isGenerating = true;
+            updateUIState(true);
+            document.getElementById('startInterviewBtn').disabled = true;
+            document.getElementById('progressContainer').style.display = 'block';
+            document.getElementById('progressFill').style.width = '0%';
+            document.getElementById('statusText').textContent = '면접관 준비 중...';
+            document.getElementById('elapsedTime').textContent = '';
+
+            llmStartTime = Date.now();
+
+            try {
+                // 면접관 첫 인사 생성
+                const chatRes = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: '면접을 시작합니다.' })
+                });
+                const chatData = await chatRes.json();
+
+                if (chatData.error) {
+                    addMessage('system', chatData.error);
+                    isGenerating = false;
+                    updateUIState(false);
+                    document.getElementById('startInterviewBtn').disabled = false;
+                    return;
+                }
+
+                const llmTime = (Date.now() - llmStartTime) / 1000;
+                document.getElementById('statLLM').textContent = llmTime.toFixed(1);
+
+                // 면접관 인사 표시
+                addMessage('assistant', chatData.response);
+
+                // 립싱크 생성
+                const ttsEngine = document.getElementById('ttsEngineSelect').value;
+                const ttsVoice = document.getElementById('ttsVoiceSelect').value;
+
+                if (streamingMode) {
+                    // 스트리밍 상태 초기화
+                    resetStreamState();
+                    document.getElementById('statusText').textContent = '스트리밍 생성 시작...';
+                    await fetch('/api/generate_streaming', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            avatar_path: avatarPath,
+                            text: chatData.response,
+                            tts_engine: ttsEngine,
+                            tts_voice: ttsVoice
+                        })
+                    });
+                } else {
+                    // 기존 API 사용 (일반 모드)
+                    document.getElementById('statusText').textContent = '일반 모드 - 생성 중...';
+                    await fetch('/api/generate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            avatar_path: avatarPath,
+                            text: chatData.response,
+                            tts_engine: ttsEngine,
+                            tts_voice: ttsVoice
+                        })
+                    });
+                }
+
+            } catch (e) {
+                console.error('Start interview failed:', e);
+                addMessage('system', '면접 시작 중 오류가 발생했습니다.');
+                isGenerating = false;
+                updateUIState(false);
+                document.getElementById('startInterviewBtn').disabled = false;
+            }
+        }
+
+        // 대화 초기화
+        async function clearHistory() {
+            try {
+                await fetch('/api/clear_history', { method: 'POST' });
+                const messagesDiv = document.getElementById('chatMessages');
+                messagesDiv.innerHTML = '<div class="chat-message system">"면접 시작" 버튼을 눌러 면접을 시작하세요</div>';
+                document.getElementById('startInterviewBtn').disabled = false;
+            } catch (e) {
+                console.error('Clear failed:', e);
+            }
+        }
+
+        // 초기화
+        loadOptions();
+    </script>
+</body>
+</html>
