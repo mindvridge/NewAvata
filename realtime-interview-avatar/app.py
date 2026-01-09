@@ -353,8 +353,7 @@ ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY', '')
 COSYVOICE_MODEL_PATH = os.getenv('COSYVOICE_MODEL_PATH', 'c:/NewAvata/NewAvata/CosyVoice/pretrained_models/CosyVoice2-0.5B')
 COSYVOICE_PROMPT_AUDIO = 'assets/audio/ElevenLabs_2025-05-09T07_25_56_Psychological Consultant Woman_gen_sp100_s94_sb75_se0_b_m2.mp3'
 COSYVOICE_PROMPT_TEXT = "안녕하세요. 저는 심리 상담사입니다."
-COSYVOICE_SPK_ID = 'default_speaker'  # 프리로드된 화자 ID
-cosyvoice_prompt_wav_path = None  # 캐싱된 프롬프트 오디오 경로
+cosyvoice_prompt_wav_path = None  # 캐싱된 프롬프트 오디오 경로 (24kHz WAV)
 
 
 def get_available_avatars():
@@ -447,7 +446,7 @@ def api_tts_engines():
 
 
 def load_cosyvoice_model():
-    """CosyVoice 모델 로드 및 화자 프리로딩"""
+    """CosyVoice 모델 로드 (화자 프리로딩 없이 원본 방식 사용)"""
     global cosyvoice_engine, cosyvoice_loaded, cosyvoice_prompt_wav_path
 
     if cosyvoice_loaded and cosyvoice_engine is not None:
@@ -460,22 +459,17 @@ def load_cosyvoice_model():
         cosyvoice_engine = CosyVoice2(COSYVOICE_MODEL_PATH, fp16=True)
         print(f"CosyVoice 모델 로드 완료! (샘플레이트: {cosyvoice_engine.sample_rate})")
 
-        # 프롬프트 오디오 사전 변환 (16kHz WAV로 캐싱)
+        # 프롬프트 오디오 사전 변환 (24kHz WAV로 캐싱 - CosyVoice2 샘플레이트)
         print("프롬프트 오디오 사전 변환 중...")
-        cosyvoice_prompt_wav_path = "assets/audio/cosyvoice_prompt_16k.wav"
+        cosyvoice_prompt_wav_path = "assets/audio/cosyvoice_prompt_24k.wav"
         subprocess.run(
-            f'ffmpeg -y -i "{COSYVOICE_PROMPT_AUDIO}" -ar 16000 -t 15 "{cosyvoice_prompt_wav_path}"',
+            f'ffmpeg -y -i "{COSYVOICE_PROMPT_AUDIO}" -ar 24000 -t 15 "{cosyvoice_prompt_wav_path}"',
             shell=True, capture_output=True
         )
+        print(f"프롬프트 오디오 준비 완료: {cosyvoice_prompt_wav_path}")
 
-        # 화자 정보 프리로딩 (add_zero_shot_spk로 speaker embedding 캐싱)
-        print("화자 정보 프리로딩 중 (add_zero_shot_spk)...")
-        cosyvoice_engine.add_zero_shot_spk(
-            prompt_text=COSYVOICE_PROMPT_TEXT,
-            prompt_wav=cosyvoice_prompt_wav_path,
-            zero_shot_spk_id=COSYVOICE_SPK_ID
-        )
-        print(f"화자 '{COSYVOICE_SPK_ID}' 프리로딩 완료!")
+        # NOTE: add_zero_shot_spk는 prompt_text 토큰까지 캐싱하여 TTS 품질 문제 발생
+        # 원본 zero-shot 방식 사용 (매번 prompt_text + prompt_wav 전달)
 
         cosyvoice_loaded = True
 
@@ -543,7 +537,7 @@ def generate_tts_audio(text, engine, voice, output_path):
         return False
 
     elif engine == 'cosyvoice':
-        # CosyVoice 2.0 TTS (프리로드된 화자 사용으로 속도 최적화)
+        # CosyVoice 2.0 TTS (원본 zero-shot 방식 - 매번 prompt_text + prompt_wav 전달)
         global cosyvoice_engine, cosyvoice_loaded, cosyvoice_prompt_wav_path
 
         try:
@@ -555,17 +549,16 @@ def generate_tts_audio(text, engine, voice, output_path):
                     print(f"CosyVoice 로드 실패")
                     return False
 
-            print(f"CosyVoice Zero-shot TTS 생성 중 (캐싱된 화자)... (텍스트: {text[:30]}...)")
+            print(f"CosyVoice Zero-shot TTS 생성 중 (원본 방식)... (텍스트: {text[:30]}...)")
             start_time = time.time()
 
-            # 프리로드된 화자 ID 사용 시 prompt_text와 prompt_wav는 빈 문자열로 전달
-            # (공식 예제: https://github.com/FunAudioLLM/CosyVoice example.py 48번 줄 참고)
+            # 원본 zero-shot 방식: prompt_text + prompt_wav를 매번 전달
+            # 이 방식이 정확한 음성 복제를 수행함
             output_audio = None
             for result in cosyvoice_engine.inference_zero_shot(
                 tts_text=text,
-                prompt_text='',  # 캐싱된 화자 사용 시 빈 문자열
-                prompt_wav='',   # 캐싱된 화자 사용 시 빈 문자열
-                zero_shot_spk_id=COSYVOICE_SPK_ID,  # 캐싱된 화자 ID 사용
+                prompt_text=COSYVOICE_PROMPT_TEXT,  # 원본 프롬프트 텍스트
+                prompt_wav=cosyvoice_prompt_wav_path,  # 원본 프롬프트 오디오
                 stream=False,
                 speed=1.0
             ):
