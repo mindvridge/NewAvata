@@ -140,15 +140,17 @@ class LipsyncEngine:
         return True
 
     def generate_lipsync(self, precomputed_path, audio_path, output_dir="results/realtime", fps=25):
-        """프리컴퓨트된 아바타로 립싱크 생성 (공식 MuseTalk 블렌딩 사용)"""
+        """프리컴퓨트된 아바타로 립싱크 생성 (배치 처리 + 공식 MuseTalk 블렌딩)"""
         import torch
         import copy
+        from musetalk.utils.utils import datagen
         global face_parsing
 
         if not self.loaded:
             raise RuntimeError("모델이 로드되지 않았습니다")
 
         start_time = time.time()
+        batch_size = 8  # 배치 크기 (GPU 메모리에 따라 조절)
 
         # FaceParsing 초기화 (최초 1회)
         if face_parsing is None:
@@ -192,75 +194,98 @@ class LipsyncEngine:
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
-        # UNet 추론
-        print("UNet 추론 시작...")
-        generated_frames = []
+        # latent 리스트를 whisper_chunks 길이에 맞게 순환 확장
+        extended_latent_list = []
+        for i in range(num_frames):
+            idx = i % len(input_latent_list)
+            extended_latent_list.append(input_latent_list[idx])
+
+        # 배치 처리를 위한 datagen 사용
+        print(f"UNet 추론 시작 (batch_size={batch_size})...")
+        gen = datagen(
+            whisper_chunks=whisper_chunks,
+            vae_encode_latents=extended_latent_list,
+            batch_size=batch_size,
+            delay_frame=0,
+            device=self.device,
+        )
+
+        res_frame_list = []
+        total_batches = int(np.ceil(float(num_frames) / batch_size))
 
         with torch.no_grad():
-            for i, whisper_chunk in enumerate(tqdm(whisper_chunks, desc="UNet 추론")):
+            for batch_idx, (whisper_batch, latent_batch) in enumerate(tqdm(gen, total=total_batches, desc="UNet 추론")):
                 if generation_cancelled:
                     print("생성 취소됨")
                     return None
 
-                # 순환 인덱스
-                idx = i % len(input_latent_list)
+                # PE 적용
+                audio_feature_batch = self.pe(whisper_batch)
+                latent_batch = latent_batch.to(dtype=self.unet.model.dtype)
 
-                input_latent = input_latent_list[idx].to(self.device, dtype=self.weight_dtype)
-                audio_feature = whisper_chunk.to(self.device, dtype=self.weight_dtype)
-                # 배치 차원 추가 (필요시)
-                if audio_feature.dim() == 2:
-                    audio_feature = audio_feature.unsqueeze(0)
-
-                # UNet 추론
-                audio_feature = self.pe(audio_feature)
-                pred_latent = self.unet.model(
-                    input_latent,
+                # 배치 UNet 추론
+                pred_latents = self.unet.model(
+                    latent_batch,
                     self.timesteps,
-                    encoder_hidden_states=audio_feature
+                    encoder_hidden_states=audio_feature_batch
                 ).sample
 
-                # VAE 디코딩
-                pred_frame = self.vae.decode_latents(pred_latent)
-                pred_frame = pred_frame[0]
-
-                # 공식 MuseTalk V1.5 블렌딩
-                coord = coords_list[idx]
-                original_frame = copy.deepcopy(frames_list[idx])
-
-                x1, y1, x2, y2 = coord
-                # V1.5: extra_margin 추가
-                y2_extended = min(y2 + extra_margin, original_frame.shape[0])
-
-                # 예측 프레임 리사이즈
-                try:
-                    pred_frame_resized = cv2.resize(
-                        pred_frame.astype(np.uint8),
-                        (x2 - x1, y2_extended - y1)
-                    )
-                except Exception as e:
-                    print(f"리사이즈 오류: {e}")
-                    generated_frames.append(original_frame)
-                    continue
-
-                # 공식 get_image 블렌딩 (V1.5 jaw 모드)
-                result_frame = get_image(
-                    original_frame,
-                    pred_frame_resized,
-                    [x1, y1, x2, y2_extended],
-                    mode="jaw",
-                    fp=face_parsing
-                )
-
-                generated_frames.append(result_frame)
+                # 배치 VAE 디코딩
+                recon_frames = self.vae.decode_latents(pred_latents)
+                for res_frame in recon_frames:
+                    res_frame_list.append(res_frame)
 
                 # 진행률 전송
-                progress = int((i + 1) / num_frames * 70)
+                progress = int((batch_idx + 1) / total_batches * 50)
                 elapsed = time.time() - start_time
                 socketio.emit('status', {
-                    'message': f'UNet 추론 중... {i+1}/{num_frames}',
+                    'message': f'UNet 추론 중... {min((batch_idx+1)*batch_size, num_frames)}/{num_frames}',
                     'progress': progress,
                     'elapsed': elapsed
                 })
+
+        # 블렌딩
+        print("블렌딩 시작...")
+        generated_frames = []
+
+        for i, res_frame in enumerate(tqdm(res_frame_list, desc="블렌딩")):
+            idx = i % len(coords_list)
+            coord = coords_list[idx]
+            original_frame = copy.deepcopy(frames_list[idx])
+
+            x1, y1, x2, y2 = coord
+            y2_extended = min(y2 + extra_margin, original_frame.shape[0])
+
+            # 예측 프레임 리사이즈
+            try:
+                pred_frame_resized = cv2.resize(
+                    res_frame.astype(np.uint8),
+                    (x2 - x1, y2_extended - y1)
+                )
+            except Exception as e:
+                print(f"리사이즈 오류: {e}")
+                generated_frames.append(original_frame)
+                continue
+
+            # 공식 get_image 블렌딩 (V1.5 jaw 모드)
+            result_frame = get_image(
+                original_frame,
+                pred_frame_resized,
+                [x1, y1, x2, y2_extended],
+                mode="jaw",
+                fp=face_parsing
+            )
+
+            generated_frames.append(result_frame)
+
+            # 진행률 전송
+            progress = 50 + int((i + 1) / len(res_frame_list) * 30)
+            elapsed = time.time() - start_time
+            socketio.emit('status', {
+                'message': f'블렌딩 중... {i+1}/{len(res_frame_list)}',
+                'progress': progress,
+                'elapsed': elapsed
+            })
 
         # 비디오 저장
         print("비디오 저장 중...")
