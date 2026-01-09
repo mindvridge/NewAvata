@@ -558,12 +558,13 @@ def generate_tts_audio(text, engine, voice, output_path):
             print(f"CosyVoice Zero-shot TTS 생성 중 (캐싱된 화자)... (텍스트: {text[:30]}...)")
             start_time = time.time()
 
-            # 프리로드된 화자 ID 사용 (zero_shot_spk_id 파라미터로 캐싱된 speaker embedding 재사용)
+            # 프리로드된 화자 ID 사용 시 prompt_text와 prompt_wav는 빈 문자열로 전달
+            # (공식 예제: https://github.com/FunAudioLLM/CosyVoice example.py 48번 줄 참고)
             output_audio = None
             for result in cosyvoice_engine.inference_zero_shot(
                 tts_text=text,
-                prompt_text=COSYVOICE_PROMPT_TEXT,
-                prompt_wav=cosyvoice_prompt_wav_path,
+                prompt_text='',  # 캐싱된 화자 사용 시 빈 문자열
+                prompt_wav='',   # 캐싱된 화자 사용 시 빈 문자열
                 zero_shot_spk_id=COSYVOICE_SPK_ID,  # 캐싱된 화자 ID 사용
                 stream=False,
                 speed=1.0
