@@ -1,103 +1,23 @@
 # ============================================================================
 # Docker Compose for Realtime Interview Avatar System
+# MuseTalk V1.5 + CosyVoice 2.0 TTS
 # ============================================================================
 
 version: '3.8'
 
 services:
   # --------------------------------------------------------------------------
-  # Redis - 세션 관리 및 캐싱
+  # 립싱크 아바타 서버 (Flask + SocketIO)
   # --------------------------------------------------------------------------
-  redis:
-    image: redis:7-alpine
-    container_name: interview-redis
-    restart: unless-stopped
-    command: >
-      redis-server
-      --maxmemory 512mb
-      --maxmemory-policy allkeys-lru
-      --appendonly yes
-      --save 60 1000
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    networks:
-      - interview-network
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # --------------------------------------------------------------------------
-  # Interview Avatar Application
-  # --------------------------------------------------------------------------
-  app:
+  avatar-server:
     build:
-      context: .
-      dockerfile: docker/Dockerfile
-      args:
-        - BUILDKIT_INLINE_CACHE=1
-    image: interview-avatar:latest
-    container_name: interview-avatar-app
+      context: ..
+      dockerfile: realtime-interview-avatar/Dockerfile
+    image: realtime-avatar:latest
+    container_name: avatar-server
     restart: unless-stopped
-    depends_on:
-      redis:
-        condition: service_healthy
-    ports:
-      - "8000:8000"
-    environment:
-      # 애플리케이션 설정
-      - APP_ENV=production
-      - LOG_LEVEL=INFO
-      - DEBUG=false
 
-      # Redis 설정
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_DB=0
-
-      # NVIDIA GPU 설정
-      - NVIDIA_VISIBLE_DEVICES=all
-      - CUDA_VISIBLE_DEVICES=0
-
-      # API 키 (환경 변수 또는 .env 파일에서 로드)
-      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
-      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - DAILY_API_KEY=${DAILY_API_KEY}
-      - NAVER_CLIENT_ID=${NAVER_CLIENT_ID:-}
-      - NAVER_CLIENT_SECRET=${NAVER_CLIENT_SECRET:-}
-
-      # 모델 설정
-      - MODELS_DIR=/app/models
-      - AVATAR_SOURCE_IMAGE=/app/assets/images/default_avatar.jpg
-
-      # 성능 설정
-      - MAX_CONCURRENT_SESSIONS=10
-      - SESSION_TIMEOUT=1800
-      - ENABLE_FACE_ENHANCEMENT=true
-
-      # 네트워크 설정
-      - CORS_ORIGINS=*
-      - API_KEY_REQUIRED=false
-    volumes:
-      # 데이터 볼륨
-      - app_data:/app/data
-      - app_logs:/app/logs
-      - app_uploads:/app/uploads
-
-      # 모델 파일 (선택적: 호스트에 모델 파일이 있는 경우)
-      # - ./models:/app/models:ro
-
-      # 개발 모드 (선택적: 소스 코드 마운트)
-      # - ./src:/app/src
-
-      # 설정 파일
-      # - ./config:/app/config:ro
-    networks:
-      - interview-network
+    # GPU 지원
     deploy:
       resources:
         reservations:
@@ -105,31 +25,91 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+
+    ports:
+      - "5000:5000"
+
+    environment:
+      # NVIDIA GPU 설정
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+
+      # API 키 (.env 파일에서 로드)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+
+      # 모델 경로
+      - COSYVOICE_MODEL_PATH=/app/CosyVoice/pretrained_models/CosyVoice2-0.5B
+
+    volumes:
+      # 모델 파일 (호스트에서 마운트 - 읽기 전용)
+      - ./models:/app/realtime-interview-avatar/models:ro
+      - ./precomputed:/app/realtime-interview-avatar/precomputed:ro
+      - ../CosyVoice/pretrained_models:/app/CosyVoice/pretrained_models:ro
+      - ../MuseTalk/models:/app/MuseTalk/models:ro
+
+      # 결과 및 에셋 (쓰기 가능)
+      - ./results:/app/realtime-interview-avatar/results
+      - ./assets:/app/realtime-interview-avatar/assets
+
+      # 환경 설정
+      - ./.env:/app/realtime-interview-avatar/.env:ro
+
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/v2/status"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      start_period: 180s  # 모델 로딩 시간 고려
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+    networks:
+      - avatar-network
 
   # --------------------------------------------------------------------------
-  # Nginx (선택적) - 리버스 프록시 및 정적 파일 서빙
+  # Redis (선택적) - 세션 캐싱
+  # --------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: avatar-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - avatar-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - with-redis
+
+  # --------------------------------------------------------------------------
+  # Nginx (선택적) - 리버스 프록시
   # --------------------------------------------------------------------------
   nginx:
     image: nginx:alpine
-    container_name: interview-nginx
+    container_name: avatar-nginx
     restart: unless-stopped
     depends_on:
-      - app
+      - avatar-server
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./docker/nginx/ssl:/etc/nginx/ssl:ro
-      - ./src/server/static:/usr/share/nginx/html/static:ro
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/ssl:/etc/nginx/ssl:ro
     networks:
-      - interview-network
+      - avatar-network
     profiles:
       - production
 
@@ -137,11 +117,8 @@ services:
 # Networks
 # ============================================================================
 networks:
-  interview-network:
+  avatar-network:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
 
 # ============================================================================
 # Volumes
@@ -149,45 +126,39 @@ networks:
 volumes:
   redis_data:
     driver: local
-  app_data:
-    driver: local
-  app_logs:
-    driver: local
-  app_uploads:
-    driver: local
 
 # ============================================================================
 # 사용 방법
 # ============================================================================
 #
 # 1. 환경 변수 설정:
-#    .env 파일을 프로젝트 루트에 생성하고 필요한 API 키를 추가
+#    cp .env.example .env
+#    # .env 파일에 API 키 추가
 #
-# 2. 빌드 및 시작 (개발):
-#    docker-compose up --build
+# 2. 빌드:
+#    docker-compose build
 #
-# 3. 백그라운드 실행 (프로덕션):
+# 3. 시작:
 #    docker-compose up -d
 #
-# 4. Nginx 포함 실행:
-#    docker-compose --profile production up -d
+# 4. 로그 확인:
+#    docker-compose logs -f avatar-server
 #
-# 5. 로그 확인:
-#    docker-compose logs -f app
-#
-# 6. 중지:
+# 5. 중지:
 #    docker-compose down
 #
-# 7. 볼륨 포함 완전 삭제:
-#    docker-compose down -v
+# 6. Redis 포함:
+#    docker-compose --profile with-redis up -d
 #
-# 8. 특정 서비스만 재시작:
-#    docker-compose restart app
+# 7. Nginx 포함 (프로덕션):
+#    docker-compose --profile production up -d
 #
-# 9. 스케일링 (여러 인스턴스):
-#    docker-compose up -d --scale app=3
+# 8. API 테스트:
+#    curl http://localhost:5000/api/v2/status
 #
-# 10. 헬스체크 상태 확인:
-#     docker-compose ps
+# 9. 립싱크 생성:
+#    curl -X POST http://localhost:5000/api/v2/lipsync \
+#      -H "Content-Type: application/json" \
+#      -d '{"text": "안녕하세요", "avatar": "your_avatar_name"}'
 #
 # ============================================================================

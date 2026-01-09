@@ -769,6 +769,320 @@ def api_clear_history():
     return jsonify({"status": "cleared"})
 
 
+# ============================================================
+# REST API (동기적 - WebSocket 없이 사용 가능)
+# ============================================================
+
+@app.route('/api/v2/tts', methods=['POST'])
+def api_v2_tts():
+    """
+    TTS 오디오 생성 API (동기적)
+
+    Request:
+        {
+            "text": "합성할 텍스트",
+            "engine": "cosyvoice",  // optional, default: cosyvoice
+            "voice": "zero-shot"    // optional
+        }
+
+    Response:
+        {
+            "success": true,
+            "audio_path": "assets/audio/tts_output.wav",
+            "audio_url": "/assets/audio/tts_output.wav",
+            "duration": 3.5,
+            "elapsed": 2.1
+        }
+    """
+    data = request.json or {}
+    text = data.get('text', '')
+    engine = data.get('engine', DEFAULT_TTS_ENGINE)
+    voice = data.get('voice', DEFAULT_TTS_VOICE)
+
+    if not text:
+        return jsonify({"success": False, "error": "text가 필요합니다"}), 400
+
+    try:
+        start_time = time.time()
+        output_path = Path("assets/audio/tts_api_output.wav")
+
+        success = generate_tts_audio(text, engine, voice, output_path)
+
+        if success:
+            # 오디오 길이 계산
+            import wave
+            with wave.open(str(output_path), 'rb') as wf:
+                frames = wf.getnframes()
+                rate = wf.getframerate()
+                duration = frames / float(rate)
+
+            elapsed = time.time() - start_time
+            return jsonify({
+                "success": True,
+                "audio_path": str(output_path),
+                "audio_url": "/assets/audio/tts_api_output.wav",
+                "duration": round(duration, 2),
+                "elapsed": round(elapsed, 2)
+            })
+        else:
+            return jsonify({"success": False, "error": "TTS 생성 실패"}), 500
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/v2/lipsync', methods=['POST'])
+def api_v2_lipsync():
+    """
+    립싱크 비디오 생성 API (동기적)
+
+    Request:
+        {
+            "text": "합성할 텍스트",
+            "avatar": "avatar_name",      // precomputed 폴더의 아바타 이름
+            "avatar_path": "path.pkl",    // 또는 직접 경로 지정
+            "tts_engine": "cosyvoice",    // optional
+            "tts_voice": "zero-shot"      // optional
+        }
+
+    Response:
+        {
+            "success": true,
+            "video_path": "results/realtime/output_with_audio.mp4",
+            "video_url": "/video/output_with_audio.mp4",
+            "elapsed": 25.3
+        }
+    """
+    global lipsync_engine
+
+    data = request.json or {}
+    text = data.get('text', '')
+    avatar = data.get('avatar', '')
+    avatar_path = data.get('avatar_path', '')
+    tts_engine = data.get('tts_engine', DEFAULT_TTS_ENGINE)
+    tts_voice = data.get('tts_voice', DEFAULT_TTS_VOICE)
+
+    # 아바타 경로 결정
+    if not avatar_path and avatar:
+        avatar_path = f"precomputed/{avatar}_precomputed.pkl"
+
+    if not avatar_path:
+        return jsonify({"success": False, "error": "avatar 또는 avatar_path가 필요합니다"}), 400
+
+    if not os.path.exists(avatar_path):
+        return jsonify({"success": False, "error": f"아바타 파일을 찾을 수 없습니다: {avatar_path}"}), 404
+
+    if not text:
+        return jsonify({"success": False, "error": "text가 필요합니다"}), 400
+
+    if not lipsync_engine or not lipsync_engine.loaded:
+        return jsonify({"success": False, "error": "립싱크 엔진이 로드되지 않았습니다"}), 503
+
+    try:
+        start_time = time.time()
+
+        # 1. TTS 생성
+        tts_output = Path("assets/audio/tts_output.wav")
+        tts_success = generate_tts_audio(text, tts_engine, tts_voice, tts_output)
+
+        if not tts_success:
+            return jsonify({"success": False, "error": "TTS 생성 실패"}), 500
+
+        # 2. 립싱크 생성
+        output_video = lipsync_engine.generate_lipsync(
+            avatar_path,
+            str(tts_output),
+            output_dir="results/realtime"
+        )
+
+        if output_video:
+            elapsed = time.time() - start_time
+            return jsonify({
+                "success": True,
+                "video_path": output_video,
+                "video_url": "/video/output_with_audio.mp4",
+                "elapsed": round(elapsed, 2)
+            })
+        else:
+            return jsonify({"success": False, "error": "립싱크 생성 실패"}), 500
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/v2/chat_and_lipsync', methods=['POST'])
+def api_v2_chat_and_lipsync():
+    """
+    채팅 + 립싱크 통합 API (동기적)
+    사용자 메시지를 받아 LLM 응답 생성 후 립싱크 비디오까지 생성
+
+    Request:
+        {
+            "message": "사용자 메시지",
+            "avatar": "avatar_name",
+            "avatar_path": "path.pkl",    // 또는 직접 경로
+            "tts_engine": "cosyvoice",
+            "tts_voice": "zero-shot"
+        }
+
+    Response:
+        {
+            "success": true,
+            "response": "LLM 응답 텍스트",
+            "video_path": "results/realtime/output_with_audio.mp4",
+            "video_url": "/video/output_with_audio.mp4",
+            "elapsed": 28.5
+        }
+    """
+    global conversation_history, lipsync_engine
+
+    data = request.json or {}
+    message = data.get('message', '')
+    avatar = data.get('avatar', '')
+    avatar_path = data.get('avatar_path', '')
+    tts_engine = data.get('tts_engine', DEFAULT_TTS_ENGINE)
+    tts_voice = data.get('tts_voice', DEFAULT_TTS_VOICE)
+
+    if not message:
+        return jsonify({"success": False, "error": "message가 필요합니다"}), 400
+
+    # 아바타 경로 결정
+    if not avatar_path and avatar:
+        avatar_path = f"precomputed/{avatar}_precomputed.pkl"
+
+    if not avatar_path:
+        return jsonify({"success": False, "error": "avatar 또는 avatar_path가 필요합니다"}), 400
+
+    if not os.path.exists(avatar_path):
+        return jsonify({"success": False, "error": f"아바타 파일을 찾을 수 없습니다: {avatar_path}"}), 404
+
+    if not lipsync_engine or not lipsync_engine.loaded:
+        return jsonify({"success": False, "error": "립싱크 엔진이 로드되지 않았습니다"}), 503
+
+    try:
+        start_time = time.time()
+
+        # 1. LLM 응답 생성
+        openai_api_key = os.getenv('OPENAI_API_KEY', '')
+
+        if openai_api_key:
+            import requests as req
+            conversation_history.append({"role": "user", "content": message})
+
+            response = req.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {openai_api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "gpt-4o-mini",
+                    "messages": [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        *conversation_history[-10:]
+                    ],
+                    "max_tokens": 200,
+                    "temperature": 0.7
+                }
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                llm_response = result['choices'][0]['message']['content']
+                conversation_history.append({"role": "assistant", "content": llm_response})
+            else:
+                return jsonify({"success": False, "error": f"OpenAI API 오류: {response.status_code}"}), 500
+        else:
+            # OpenAI 키가 없으면 간단한 응답
+            import random
+            responses = [
+                f"'{message}'에 대해 더 자세히 설명해 주시겠어요?",
+                "좋은 답변입니다. 다른 경험도 있으신가요?",
+                "그 경험에서 무엇을 배우셨나요?",
+            ]
+            llm_response = random.choice(responses)
+            conversation_history.append({"role": "user", "content": message})
+            conversation_history.append({"role": "assistant", "content": llm_response})
+
+        # 2. TTS 생성
+        tts_output = Path("assets/audio/tts_output.wav")
+        tts_success = generate_tts_audio(llm_response, tts_engine, tts_voice, tts_output)
+
+        if not tts_success:
+            return jsonify({
+                "success": False,
+                "response": llm_response,
+                "error": "TTS 생성 실패"
+            }), 500
+
+        # 3. 립싱크 생성
+        output_video = lipsync_engine.generate_lipsync(
+            avatar_path,
+            str(tts_output),
+            output_dir="results/realtime"
+        )
+
+        elapsed = time.time() - start_time
+
+        if output_video:
+            return jsonify({
+                "success": True,
+                "response": llm_response,
+                "video_path": output_video,
+                "video_url": "/video/output_with_audio.mp4",
+                "elapsed": round(elapsed, 2)
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "response": llm_response,
+                "error": "립싱크 생성 실패"
+            }), 500
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/v2/status', methods=['GET'])
+def api_v2_status():
+    """
+    서버 상태 확인 API
+
+    Response:
+        {
+            "status": "ok",
+            "models_loaded": true,
+            "cosyvoice_loaded": true,
+            "available_avatars": ["avatar1", "avatar2"],
+            "tts_engines": ["cosyvoice", "elevenlabs"]
+        }
+    """
+    avatars = get_available_avatars()
+    avatar_names = [a['id'] for a in avatars]
+
+    available_engines = []
+    for engine_id, engine_info in TTS_ENGINES.items():
+        if engine_id == 'cosyvoice':
+            if os.path.exists(COSYVOICE_MODEL_PATH):
+                available_engines.append(engine_id)
+        else:
+            available_engines.append(engine_id)
+
+    return jsonify({
+        "status": "ok",
+        "models_loaded": models_loaded,
+        "cosyvoice_loaded": cosyvoice_loaded,
+        "available_avatars": avatar_names,
+        "tts_engines": available_engines
+    })
+
+
 @app.route('/api/generate_streaming', methods=['POST'])
 def api_generate_streaming():
     """스트리밍 립싱크 비디오 생성 API (일반 생성과 동일하게 동작)"""
