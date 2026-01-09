@@ -329,17 +329,22 @@ class LipsyncEngine:
         return final_video
 
 
-# TTS 엔진 설정
+# TTS 엔진 설정 (CosyVoice 기본)
 TTS_ENGINES = {
-    'elevenlabs': {
-        'name': 'ElevenLabs',
-        'voices': ['Custom', 'Rachel', 'Adam', 'Bella', 'Antoni']
-    },
     'cosyvoice': {
         'name': 'CosyVoice 2.0',
-        'voices': ['zero-shot']
+        'voices': ['zero-shot'],
+        'default': True
+    },
+    'elevenlabs': {
+        'name': 'ElevenLabs',
+        'voices': ['Custom']
     }
 }
+
+# 기본 TTS 엔진
+DEFAULT_TTS_ENGINE = 'cosyvoice'
+DEFAULT_TTS_VOICE = 'zero-shot'
 
 # API 키 설정
 ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY', '')
@@ -596,8 +601,8 @@ def api_generate():
     data = request.json
     avatar_path = data.get('avatar_path')
     text = data.get('text', '')
-    tts_engine = data.get('tts_engine', 'edge')
-    tts_voice = data.get('tts_voice', 'ko-KR-SunHiNeural')
+    tts_engine = data.get('tts_engine', DEFAULT_TTS_ENGINE)
+    tts_voice = data.get('tts_voice', DEFAULT_TTS_VOICE)
 
     if not avatar_path:
         return jsonify({"error": "avatar_path가 필요합니다"}), 400
@@ -764,8 +769,8 @@ def api_generate_streaming():
     data = request.json
     avatar_path = data.get('avatar_path')
     text = data.get('text', '')
-    tts_engine = data.get('tts_engine', 'edge')
-    tts_voice = data.get('tts_voice', 'ko-KR-SunHiNeural')
+    tts_engine = data.get('tts_engine', DEFAULT_TTS_ENGINE)
+    tts_voice = data.get('tts_voice', DEFAULT_TTS_VOICE)
 
     if not avatar_path:
         return jsonify({"error": "avatar_path가 필요합니다"}), 400
