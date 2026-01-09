@@ -17,8 +17,11 @@ build/
 *.safetensors
 *.pt
 *.bin
+*.pkl
 models/
 checkpoints/
+precomputed/
+pretrained_models/
 
 # Temp files
 nul
