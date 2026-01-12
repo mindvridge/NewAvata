@@ -1656,3 +1656,24 @@ SOFTWARE.
 - `realtime-interview-avatar/templates/index.html`
 - `realtime-interview-avatar/start_server.bat`
 - `MuseTalk/musetalk/utils/blending.py` (blur 커널 감소)
+
+---
+
+### 2026-01-12 - CosyVoice 한국어 TTS 수정 (중요 백업 포인트)
+
+**커밋: `82198c4`** - CosyVoice 한국어 음성 합성 수정
+
+#### 주요 변경 사항
+
+1. **CosyVoice 프롬프트 설정 수정**
+   - 프롬프트 오디오: `여성 50대 면접관` 음성 파일 (6.5초)
+   - 프롬프트 텍스트: 오디오 내용과 정확히 일치하도록 수정
+   - `"안녕하세요! 면접에 참여해 주셔서 감사합니다. 먼저, 본인에 대해 간단히 소개해 주시겠어요?"`
+
+2. **한국어 숫자 읽기 문제 해결**
+   - `text_frontend=False` 설정 추가
+   - CosyVoice가 한국어를 영어로 인식하여 숫자를 영어로 변환하는 문제 해결
+   - 예: "13년" → "thirteen년" 대신 "십삼년"으로 정상 발음
+
+#### 관련 파일
+- `realtime-interview-avatar/app.py` (CosyVoice 설정)
