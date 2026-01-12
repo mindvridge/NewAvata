@@ -410,8 +410,8 @@ ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY', '')
 
 # CosyVoice 설정
 COSYVOICE_MODEL_PATH = os.getenv('COSYVOICE_MODEL_PATH', 'c:/NewAvata/NewAvata/CosyVoice/pretrained_models/CosyVoice2-0.5B')
-COSYVOICE_PROMPT_AUDIO = 'assets/audio/ElevenLabs_2025-05-09T07_25_56_Psychological Consultant Woman_gen_sp100_s94_sb75_se0_b_m2.mp3'
-COSYVOICE_PROMPT_TEXT = "안녕하세요. 저는 심리 상담사입니다."
+COSYVOICE_PROMPT_AUDIO = 'assets/images/ElevenLabs_2026-01-12T04_48_56_여성 50대 면접관_gen_sp100_s50_sb75_se0_b_m2.mp3'
+COSYVOICE_PROMPT_TEXT = "안녕하세요! 면접에 참여해 주셔서 감사합니다. 먼저, 본인에 대해 간단히 소개해 주시겠어요?"
 cosyvoice_prompt_wav_path = None  # 캐싱된 프롬프트 오디오 경로 (24kHz WAV)
 
 
@@ -619,7 +619,8 @@ def generate_tts_audio(text, engine, voice, output_path):
                 prompt_text=COSYVOICE_PROMPT_TEXT,  # 원본 프롬프트 텍스트
                 prompt_wav=cosyvoice_prompt_wav_path,  # 원본 프롬프트 오디오
                 stream=False,
-                speed=1.0
+                speed=1.0,
+                text_frontend=False  # 한국어: 텍스트 전처리 비활성화 (숫자 영어 변환 방지)
             ):
                 if output_audio is None:
                     output_audio = result['tts_speech']
