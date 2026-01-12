@@ -23,11 +23,24 @@ checkpoints/
 precomputed/
 pretrained_models/
 
+# Large external projects (models inside)
+CosyVoice/
+MuseTalk/
+
+# Virtual environments
+venv/
+.venv/
+
 # Temp files
 nul
 temp_mmcv/
 *.tmp
 *.log
+server_log*.txt
+server_debug.txt
+temp_*.jpg
+temp_check/
+*.broken
 
 # IDE
 .vscode/

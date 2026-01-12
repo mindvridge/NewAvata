@@ -1,0 +1,83 @@
+# =============================================================================
+# Docker Ignore - 빌드에서 제외할 파일들
+# =============================================================================
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info
+.eggs
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+
+# 가상환경
+venv/
+.venv/
+ENV/
+env/
+.env.local
+
+# 모델 파일 (볼륨으로 마운트)
+*.pkl
+*.pt
+*.pth
+*.onnx
+*.plan
+*.bin
+*.safetensors
+
+# 모델 디렉토리 (볼륨으로 마운트)
+CosyVoice/pretrained_models/
+MuseTalk/models/
+realtime-interview-avatar/models/
+realtime-interview-avatar/precomputed/
+
+# 결과 디렉토리
+realtime-interview-avatar/results/
+results/
+
+# 로그
+*.log
+*.txt
+!requirements*.txt
+
+# 테스트 및 임시 파일
+*.tmp
+*.temp
+temp_*/
+test_*.py
+*_test.py
+*.broken
+
+# Docker 관련
+Dockerfile*
+docker-compose*.yml
+docker/
+
+# 문서
+*.md
+docs/
+LICENSE
+
+# 기타
+.DS_Store
+Thumbs.db
+*.bak
+*.backup

@@ -60,12 +60,6 @@ RUN pip install --no-cache-dir \
 # =============================================================================
 # CosyVoice 의존성
 # =============================================================================
-COPY CosyVoice/requirements.txt /tmp/cosyvoice_requirements.txt
-RUN pip install --no-cache-dir \
-    --extra-index-url https://download.pytorch.org/whl/cu121 \
-    -r /tmp/cosyvoice_requirements.txt || true
-
-# CosyVoice 추가 패키지
 RUN pip install --no-cache-dir \
     conformer==0.3.2 \
     diffusers==0.29.0 \
@@ -92,7 +86,10 @@ RUN pip install --no-cache-dir \
     ffmpeg-python \
     moviepy \
     imageio[ffmpeg] \
-    huggingface_hub==0.30.2
+    huggingface_hub==0.30.2 \
+    face_alignment \
+    facexlib \
+    mediapipe
 
 # =============================================================================
 # 웹 서버 의존성
@@ -104,7 +101,8 @@ RUN pip install --no-cache-dir \
     python-dotenv==1.0.0 \
     requests>=2.31.0 \
     gevent==23.9.1 \
-    gevent-websocket==0.10.1
+    gevent-websocket==0.10.1 \
+    openai>=1.0.0
 
 # =============================================================================
 # ONNX Runtime GPU (Linux용)
@@ -117,26 +115,28 @@ RUN pip install --no-cache-dir \
 # 프로젝트 파일 복사
 # =============================================================================
 
-# CosyVoice 복사
-COPY CosyVoice /app/CosyVoice
+# CosyVoice 소스 복사 (pretrained_models 제외)
+COPY CosyVoice/cosyvoice /app/CosyVoice/cosyvoice
+COPY CosyVoice/third_party /app/CosyVoice/third_party
 
-# MuseTalk 복사
-COPY MuseTalk /app/MuseTalk
+# MuseTalk 소스 복사 (models 제외)
+COPY MuseTalk/musetalk /app/MuseTalk/musetalk
+COPY MuseTalk/configs /app/MuseTalk/configs
 
 # 메인 애플리케이션 복사
-COPY realtime-interview-avatar /app/realtime-interview-avatar
+COPY realtime-interview-avatar/app.py /app/realtime-interview-avatar/
+COPY realtime-interview-avatar/templates /app/realtime-interview-avatar/templates
+COPY realtime-interview-avatar/static /app/realtime-interview-avatar/static
+COPY realtime-interview-avatar/assets /app/realtime-interview-avatar/assets
 
 # =============================================================================
-# 모델 디렉토리 (볼륨 마운트용)
+# 디렉토리 생성
 # =============================================================================
-# 모델은 볼륨으로 마운트하거나 빌드 시 복사
-# COPY models /app/realtime-interview-avatar/models
-# COPY CosyVoice/pretrained_models /app/CosyVoice/pretrained_models
-
-# 결과 디렉토리 생성
 RUN mkdir -p /app/realtime-interview-avatar/results/realtime \
-    && mkdir -p /app/realtime-interview-avatar/assets/audio \
-    && mkdir -p /app/realtime-interview-avatar/precomputed
+    && mkdir -p /app/realtime-interview-avatar/models \
+    && mkdir -p /app/realtime-interview-avatar/precomputed \
+    && mkdir -p /app/CosyVoice/pretrained_models \
+    && mkdir -p /app/MuseTalk/models
 
 # 작업 디렉토리 설정
 WORKDIR /app/realtime-interview-avatar
@@ -146,11 +146,12 @@ EXPOSE 5000
 
 # 환경 변수 (런타임에 오버라이드 가능)
 ENV OPENAI_API_KEY=""
-ENV ELEVENLABS_API_KEY=""
 ENV COSYVOICE_MODEL_PATH="/app/CosyVoice/pretrained_models/CosyVoice2-0.5B"
+ENV MUSETALK_PATH="/app/MuseTalk"
+ENV COSYVOICE_PATH="/app/CosyVoice"
 
 # 헬스체크
-HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=3 \
     CMD curl -f http://localhost:5000/api/v2/status || exit 1
 
 # 시작 명령

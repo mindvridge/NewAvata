@@ -23,12 +23,12 @@ from tqdm import tqdm
 # .env 파일 로드
 load_dotenv()
 
-# MuseTalk 경로 추가
-MUSETALK_PATH = Path("c:/NewAvata/NewAvata/MuseTalk")
+# MuseTalk 경로 추가 (환경변수 또는 기본값)
+MUSETALK_PATH = Path(os.getenv('MUSETALK_PATH', 'c:/NewAvata/NewAvata/MuseTalk'))
 sys.path.insert(0, str(MUSETALK_PATH))
 
-# CosyVoice 경로 추가
-COSYVOICE_PATH = Path("c:/NewAvata/NewAvata/CosyVoice")
+# CosyVoice 경로 추가 (환경변수 또는 기본값)
+COSYVOICE_PATH = Path(os.getenv('COSYVOICE_PATH', 'c:/NewAvata/NewAvata/CosyVoice'))
 sys.path.insert(0, str(COSYVOICE_PATH))
 
 # 공식 MuseTalk 블렌딩 모듈

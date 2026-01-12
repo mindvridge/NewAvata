@@ -51,7 +51,23 @@
       "Bash(cmd.exe /c \"taskkill /F /IM \"\"Docker Desktop.exe\"\"\")",
       "Bash(cmd.exe /c \"start \"\"\"\" \"\"C:\\\\Program Files\\\\Docker\\\\Docker\\\\Docker Desktop.exe\"\"\")",
       "Bash(\"/c/Program Files/Docker/Docker/resources/bin/docker.exe\" ps)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(netsh advfirewall firewall show rule name=\"Avatar Server 5000\")",
+      "Bash(timeout:*)",
+      "Bash(ping:*)",
+      "Bash(copy:*)",
+      "Bash(conda activate:*)",
+      "Bash(C:Userspcanaconda3envsmusetalkpython.exe c:NewAvataNewAvatarealtime-interview-avatarprecompute_avatar.py --video c:NewAvataNewAvatarealtime-interview-avatarassetsimagesa24ca21b-0d02-49f0-99a7-d737c5ca6058.mp4 --max-frames 250)",
+      "Bash(cmd /c:*)",
+      "Bash(powershell -Command \"cd ''c:\\\\NewAvata\\\\NewAvata\\\\realtime-interview-avatar''; & ''C:\\\\Users\\\\pc\\\\anaconda3\\\\envs\\\\musetalk\\\\python.exe'' precompute_avatar.py --video ''assets\\\\images\\\\a24ca21b-0d02-49f0-99a7-d737c5ca6058.mp4'' --max-frames 250 2>&1\")",
+      "Bash(powershell:*)",
+      "Bash(echo:*)",
+      "Bash(netsh advfirewall firewall show rule name=\"Flask 5000\")",
+      "Bash(netsh advfirewall firewall add rule:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd multi-client WebSocket isolation and UI improvements\n\n- Add client session management with SID tracking\n- Use socketio.emit\\(to=sid\\) for targeted client messaging\n- Add generation lock to prevent concurrent lipsync generation\n- Add fade in/out effect for smoother lipsync transitions\n- Add sharpening \\(unsharp mask\\) and LANCZOS4 resize for better quality\n- Reduce Gaussian blur kernel size for sharper lip boundaries\n- Add system prompt editing feature in test page UI\n- Fix start_server.bat encoding issues\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "Bash(git commit:*)",
+      "Bash(du:*)"
     ]
   }
 }

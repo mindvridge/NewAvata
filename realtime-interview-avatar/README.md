@@ -100,31 +100,33 @@
 
 ### 프레임워크 & 라이브러리
 
-| 카테고리 | 기술 | 버전 | 용도 |
-|---------|------|------|------|
-| **음성 인식** | Deepgram Nova-3 | Latest | 실시간 STT (한국어) |
-| **언어 모델** | OpenAI GPT-4o | Latest | AI 면접관 로직 |
-| **음성 합성** | ElevenLabs | v1 | 고품질 TTS |
-| | EdgeTTS | Latest | 무료 대안 (MS) |
-| | Naver Clova | Latest | 한국어 전용 |
-| **아바타** | MuseTalk | Latest | 립싱크 생성 |
-| **파이프라인** | Pipecat | 0.0.43 | 실시간 미디어 처리 |
-| **WebRTC** | Daily.co | Latest | 웹 기반 통신 |
-| | aiortc | Latest | Python WebRTC |
-| **웹 서버** | FastAPI | 0.115+ | REST + WebSocket API |
-| **프론트엔드** | Vanilla JS | ES6 | 경량 웹 UI |
+
+| 카테고리       | 기술            | 버전   | 용도                 |
+| -------------- | --------------- | ------ | -------------------- |
+| **음성 인식**  | Deepgram Nova-3 | Latest | 실시간 STT (한국어)  |
+| **언어 모델**  | OpenAI GPT-4o   | Latest | AI 면접관 로직       |
+| **음성 합성**  | ElevenLabs      | v1     | 고품질 TTS           |
+|                | EdgeTTS         | Latest | 무료 대안 (MS)       |
+|                | Naver Clova     | Latest | 한국어 전용          |
+| **아바타**     | MuseTalk        | Latest | 립싱크 생성          |
+| **파이프라인** | Pipecat         | 0.0.43 | 실시간 미디어 처리   |
+| **WebRTC**     | Daily.co        | Latest | 웹 기반 통신         |
+|                | aiortc          | Latest | Python WebRTC        |
+| **웹 서버**    | FastAPI         | 0.115+ | REST + WebSocket API |
+| **프론트엔드** | Vanilla JS      | ES6    | 경량 웹 UI           |
 
 ### GPU 최적화
 
-| 기술 | 용도 | 성능 향상 |
-|------|------|----------|
-| **TensorRT** | 모델 추론 가속 | 2-4배 ↑ |
-| **ONNX Runtime** | 크로스 플랫폼 추론 | 1.5-2배 ↑ |
-| **FP16 양자화** | 메모리 절감 | 메모리 50% ↓ |
-| **INT8 양자화** | 극한 최적화 | 메모리 75% ↓ |
-| **배치 처리** | GPU 활용률 증가 | 4배 ↑ |
-| **LRU/TTL 캐싱** | TTS 중복 제거 | 500ms → 1ms |
-| **비동기 파이프라인** | 병렬 처리 | 레이턴시 30% ↓ |
+
+| 기술                  | 용도               | 성능 향상       |
+| --------------------- | ------------------ | --------------- |
+| **TensorRT**          | 모델 추론 가속     | 2-4배 ↑        |
+| **ONNX Runtime**      | 크로스 플랫폼 추론 | 1.5-2배 ↑      |
+| **FP16 양자화**       | 메모리 절감        | 메모리 50% ↓   |
+| **INT8 양자화**       | 극한 최적화        | 메모리 75% ↓   |
+| **배치 처리**         | GPU 활용률 증가    | 4배 ↑          |
+| **LRU/TTL 캐싱**      | TTS 중복 제거      | 500ms → 1ms    |
+| **비동기 파이프라인** | 병렬 처리          | 레이턴시 30% ↓ |
 
 ### 인프라
 
@@ -268,6 +270,7 @@ docker-compose ps
 ```
 
 서비스가 시작되면 브라우저에서 접속:
+
 - **웹 UI**: http://localhost:8000
 - **API 문서**: http://localhost:8000/docs
 
@@ -425,6 +428,7 @@ class BatchConfig:
 ```
 
 **동적 배치 크기 조정**:
+
 - 레이턴시가 높으면 배치 크기 자동 감소
 - 레이턴시가 낮으면 배치 크기 자동 증가
 - 목표 레이턴시: 50ms
@@ -447,6 +451,7 @@ class FaceFeatureCache:
 ```
 
 **캐시 프리워밍**:
+
 ```python
 # 자주 사용되는 질문 미리 캐싱
 prewarm_questions = [
@@ -471,6 +476,7 @@ GET /health
 ```
 
 **응답**:
+
 ```json
 {
   "status": "healthy",
@@ -495,6 +501,7 @@ Content-Type: application/json
 ```
 
 **응답**:
+
 ```json
 {
   "session_id": "sess_abc123",
@@ -504,6 +511,7 @@ Content-Type: application/json
 ```
 
 **cURL 예시**:
+
 ```bash
 curl -X POST http://localhost:8000/api/sessions \
   -H "Content-Type: application/json" \
@@ -517,6 +525,7 @@ GET /api/sessions/{session_id}
 ```
 
 **응답**:
+
 ```json
 {
   "session_id": "sess_abc123",
@@ -534,6 +543,7 @@ DELETE /api/sessions/{session_id}
 ```
 
 **응답**:
+
 ```json
 {
   "session_id": "sess_abc123",
@@ -729,6 +739,7 @@ docker-compose down -v
 ```
 
 **docker-compose.yml** 구조:
+
 - **app**: FastAPI 서버 (GPU 필요)
 - **redis**: 캐시 서버
 - **nginx**: 리버스 프록시 (선택사항)
@@ -763,6 +774,7 @@ services:
 ```
 
 실행:
+
 ```bash
 docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
@@ -782,6 +794,7 @@ cd scripts/deploy
 
 1. RunPod 계정 생성 및 API 키 발급
 2. `.env` 파일 설정:
+
 ```bash
 RUNPOD_API_KEY=your_api_key
 RUNPOD_GPU_TYPE=RTX_A5000
@@ -789,6 +802,7 @@ RUNPOD_REGION=US
 ```
 
 3. 배포 스크립트 실행:
+
 ```bash
 # 인스턴스 생성
 runpod create pod \
@@ -803,6 +817,7 @@ runpod list pods
 ```
 
 4. 접속 테스트:
+
 ```bash
 curl http://<INSTANCE_IP>:8000/health
 ```
@@ -821,12 +836,14 @@ curl http://<INSTANCE_IP>:8000/health
 
 1. Vast.ai 계정 생성
 2. CLI 설치:
+
 ```bash
 pip install vastai
 vastai set api-key YOUR_API_KEY
 ```
 
 3. 인스턴스 검색 및 생성:
+
 ```bash
 # RTX 3090 인스턴스 검색 (16GB VRAM)
 vastai search offers 'gpu_ram >= 16 reliability > 0.95'
@@ -852,6 +869,7 @@ vastai create instance <INSTANCE_ID> \
 
 1. Lambda Labs 계정 생성
 2. 인스턴스 생성:
+
 ```bash
 lambda-cli instances create \
   --instance-type gpu_1x_a10 \
@@ -860,6 +878,7 @@ lambda-cli instances create \
 ```
 
 3. SSH 접속 및 Docker 실행:
+
 ```bash
 ssh ubuntu@<INSTANCE_IP>
 
@@ -876,11 +895,12 @@ docker-compose up -d
 
 #### 클라우드 비교표
 
-| 플랫폼 | GPU | 비용/시간 | 안정성 | 시작 속도 | 권장 용도 |
-|--------|-----|----------|--------|----------|-----------|
-| **RunPod** | RTX A5000 | $0.34 | ⭐⭐⭐⭐ | 즉시 | 프로덕션, 개발 |
-| **Vast.ai** | RTX 3090 | $0.20 | ⭐⭐⭐ | 빠름 | 개발, 테스트 |
-| **Lambda Labs** | A10 | $0.60 | ⭐⭐⭐⭐⭐ | 보통 | 프로덕션 |
+
+| 플랫폼          | GPU       | 비용/시간 | 안정성     | 시작 속도 | 권장 용도      |
+| --------------- | --------- | --------- | ---------- | --------- | -------------- |
+| **RunPod**      | RTX A5000 | $0.34     | ⭐⭐⭐⭐   | 즉시      | 프로덕션, 개발 |
+| **Vast.ai**     | RTX 3090  | $0.20     | ⭐⭐⭐     | 빠름      | 개발, 테스트   |
+| **Lambda Labs** | A10       | $0.60     | ⭐⭐⭐⭐⭐ | 보통      | 프로덕션       |
 
 ### 로컬 배포 (스크립트)
 
@@ -907,6 +927,7 @@ CUDA_VISIBLE_DEVICES=1 ./scripts/start_local.sh
 #### 1. GPU 메모리 부족 (CUDA Out of Memory)
 
 **증상**:
+
 ```
 RuntimeError: CUDA out of memory. Tried to allocate 2.00 GiB
 ```
@@ -930,6 +951,7 @@ AVATAR_RESOLUTION = 256  # 512에서 256으로
 ```
 
 또는 환경 변수로:
+
 ```bash
 export BATCH_SIZE=1
 export AVATAR_RESOLUTION=256
@@ -939,6 +961,7 @@ export ENABLE_TENSORRT=false
 #### 2. WebRTC 연결 실패
 
 **증상**:
+
 ```
 WebSocket connection failed
 DailyTransport: Unable to join room
@@ -947,12 +970,14 @@ DailyTransport: Unable to join room
 **해결 방법**:
 
 1. **Daily.co API 키 확인**:
+
 ```bash
 # .env 파일
 DAILY_API_KEY=your_valid_api_key
 ```
 
 2. **방 URL 생성**:
+
 ```bash
 curl -X POST https://api.daily.co/v1/rooms \
   -H "Authorization: Bearer YOUR_API_KEY" \
@@ -961,6 +986,7 @@ curl -X POST https://api.daily.co/v1/rooms \
 ```
 
 3. **방화벽 확인**:
+
 ```bash
 # 포트 8000 열기
 sudo ufw allow 8000/tcp
@@ -969,6 +995,7 @@ sudo ufw allow 5349/tcp  # TURN
 ```
 
 4. **CORS 설정** (프론트엔드가 다른 도메인일 경우):
+
 ```python
 # src/server/main.py
 from fastapi.middleware.cors import CORSMiddleware
@@ -985,6 +1012,7 @@ app.add_middleware(
 #### 3. STT API 에러 (Deepgram)
 
 **증상**:
+
 ```
 DeepgramError: Invalid API key
 ```
@@ -992,16 +1020,19 @@ DeepgramError: Invalid API key
 **해결 방법**:
 
 1. API 키 확인:
+
 ```bash
 curl -X GET https://api.deepgram.com/v1/projects \
   -H "Authorization: Token YOUR_API_KEY"
 ```
 
 2. 잔액 확인:
+
 - Deepgram 대시보드에서 크레딧 잔액 확인
 - 무료 티어: $200 크레딧 (처음 가입 시)
 
 3. 대체 STT 사용 (Whisper):
+
 ```python
 # config/settings.py
 STT_PROVIDER = "whisper"  # deepgram 대신
@@ -1010,6 +1041,7 @@ STT_PROVIDER = "whisper"  # deepgram 대신
 #### 4. TTS API 에러 (ElevenLabs)
 
 **증상**:
+
 ```
 ElevenLabsError: 401 Unauthorized
 ```
@@ -1017,12 +1049,14 @@ ElevenLabsError: 401 Unauthorized
 **해결 방법**:
 
 1. 무료 대안 사용 (EdgeTTS):
+
 ```bash
 # .env
 TTS_PROVIDER=edge
 ```
 
 2. Naver Clova 사용 (한국어 전용):
+
 ```bash
 TTS_PROVIDER=naver
 NAVER_CLIENT_ID=your_client_id
@@ -1032,6 +1066,7 @@ NAVER_CLIENT_SECRET=your_client_secret
 #### 5. Docker 빌드 실패
 
 **증상**:
+
 ```
 ERROR: failed to solve: failed to compute cache key
 ```
@@ -1039,16 +1074,19 @@ ERROR: failed to solve: failed to compute cache key
 **해결 방법**:
 
 1. BuildKit 사용:
+
 ```bash
 DOCKER_BUILDKIT=1 docker build -t interview-avatar -f docker/Dockerfile .
 ```
 
 2. 캐시 없이 빌드:
+
 ```bash
 docker build --no-cache -t interview-avatar -f docker/Dockerfile .
 ```
 
 3. 디스크 공간 확인:
+
 ```bash
 df -h
 docker system prune -a  # 사용하지 않는 이미지 삭제
@@ -1057,6 +1095,7 @@ docker system prune -a  # 사용하지 않는 이미지 삭제
 #### 6. MuseTalk 모델 로딩 실패
 
 **증상**:
+
 ```
 FileNotFoundError: [Errno 2] No such file or directory: 'models/musetalk/...'
 ```
@@ -1064,11 +1103,13 @@ FileNotFoundError: [Errno 2] No such file or directory: 'models/musetalk/...'
 **해결 방법**:
 
 1. 모델 다운로드:
+
 ```bash
 python scripts/download_models.py
 ```
 
 2. 수동 다운로드:
+
 ```bash
 mkdir -p models/musetalk
 cd models/musetalk
@@ -1079,6 +1120,7 @@ wget https://huggingface.co/TMElyralab/MuseTalk/resolve/main/dwpose.pth
 ```
 
 3. 권한 확인:
+
 ```bash
 chmod -R 755 models/
 ```
@@ -1088,17 +1130,20 @@ chmod -R 755 models/
 **해결 방법**:
 
 1. **프로파일링 실행**:
+
 ```bash
 python scripts/profile.py --duration 60
 ```
 
 2. **병목 구간 확인**:
+
 - STT: > 500ms → Deepgram 리전 확인
 - LLM: > 1000ms → GPT-4 대신 GPT-3.5-turbo 사용
 - TTS: > 800ms → EdgeTTS 사용 또는 캐싱 활성화
 - Avatar: > 500ms → TensorRT 활성화, 해상도 축소
 
 3. **최적화 활성화**:
+
 ```bash
 # .env
 ENABLE_TENSORRT=true
@@ -1110,6 +1155,7 @@ CACHE_PREWARM=true
 #### 8. Redis 연결 실패
 
 **증상**:
+
 ```
 redis.exceptions.ConnectionError: Error connecting to Redis
 ```
@@ -1117,17 +1163,20 @@ redis.exceptions.ConnectionError: Error connecting to Redis
 **해결 방법**:
 
 1. Redis 서비스 확인:
+
 ```bash
 docker-compose ps redis
 docker-compose logs redis
 ```
 
 2. Redis 재시작:
+
 ```bash
 docker-compose restart redis
 ```
 
 3. Redis 없이 실행 (캐시 비활성화):
+
 ```bash
 # .env
 ENABLE_CACHE=false
@@ -1168,36 +1217,42 @@ docker-compose restart app
 
 #### Deepgram (STT)
 
-| 플랜 | 비용 | 무료 크레딧 |
-|------|------|-------------|
-| Nova-3 | $0.0043/분 | $200 |
-| Base | $0.0125/분 | - |
+
+| 플랜   | 비용       | 무료 크레딧 |
+| ------ | ---------- | ----------- |
+| Nova-3 | $0.0043/분 | $200        |
+| Base   | $0.0125/분 | -           |
 
 **월간 예상 (1시간/일 사용)**:
+
 - 30시간 × 60분 × $0.0043 = **$7.74/월**
 
 #### OpenAI (LLM)
 
-| 모델 | 입력 (1M 토큰) | 출력 (1M 토큰) |
-|------|---------------|---------------|
-| GPT-4o | $2.50 | $10.00 |
-| GPT-4-turbo | $10.00 | $30.00 |
-| GPT-3.5-turbo | $0.50 | $1.50 |
+
+| 모델          | 입력 (1M 토큰) | 출력 (1M 토큰) |
+| ------------- | -------------- | -------------- |
+| GPT-4o        | $2.50          | $10.00         |
+| GPT-4-turbo   | $10.00         | $30.00         |
+| GPT-3.5-turbo | $0.50          | $1.50          |
 
 **월간 예상 (평균 100토큰 입력, 150토큰 출력, 1000회 대화)**:
+
 - 입력: 100k 토큰 × $2.50/1M = $0.25
 - 출력: 150k 토큰 × $10.00/1M = $1.50
 - **합계: $1.75/월**
 
 #### ElevenLabs (TTS)
 
-| 플랜 | 비용 | 문자 수/월 |
-|------|------|----------|
-| Free | $0 | 10,000 |
-| Starter | $5 | 30,000 |
-| Creator | $22 | 100,000 |
+
+| 플랜    | 비용 | 문자 수/월 |
+| ------- | ---- | ---------- |
+| Free    | $0   | 10,000     |
+| Starter | $5   | 30,000     |
+| Creator | $22  | 100,000    |
 
 **월간 예상 (평균 50자 응답, 1000회 대화)**:
+
 - 50,000 문자 → **Creator 플랜: $22/월**
 
 #### EdgeTTS (무료 대안)
@@ -1208,28 +1263,32 @@ docker-compose restart app
 
 #### Daily.co (WebRTC)
 
-| 플랜 | 비용 | 분/월 |
-|------|------|-------|
-| Free | $0 | 1,000 |
-| Developer | $29 | 10,000 |
-| Business | $99 | 50,000 |
+
+| 플랜      | 비용 | 분/월  |
+| --------- | ---- | ------ |
+| Free      | $0   | 1,000  |
+| Developer | $29  | 10,000 |
+| Business  | $99  | 50,000 |
 
 **월간 예상 (30시간 사용)**:
+
 - 1,800분 → **Developer 플랜: $29/월**
 
 ### 클라우드 인프라 비용
 
 #### GPU 인스턴스 (24/7 운영)
 
-| 플랫폼 | GPU | 시간당 | 월간 (730시간) |
-|--------|-----|--------|---------------|
-| RunPod | RTX A5000 | $0.34 | $248 |
-| Vast.ai | RTX 3090 | $0.20 | $146 |
-| Lambda Labs | A10 | $0.60 | $438 |
-| AWS EC2 | g4dn.xlarge | $0.526 | $384 |
-| GCP | T4 | $0.35 | $255 |
+
+| 플랫폼      | GPU         | 시간당 | 월간 (730시간) |
+| ----------- | ----------- | ------ | -------------- |
+| RunPod      | RTX A5000   | $0.34  | $248           |
+| Vast.ai     | RTX 3090    | $0.20  | $146           |
+| Lambda Labs | A10         | $0.60  | $438           |
+| AWS EC2     | g4dn.xlarge | $0.526 | $384           |
+| GCP         | T4          | $0.35  | $255           |
 
 **권장 옵션**:
+
 - **개발/테스트**: Vast.ai RTX 3090 ($146/월)
 - **프로덕션**: RunPod RTX A5000 ($248/월)
 - **엔터프라이즈**: Lambda Labs A10 ($438/월)
@@ -1238,47 +1297,51 @@ docker-compose restart app
 
 시간당만 과금 (인스턴스 중지 시 비용 없음):
 
-| 사용 패턴 | 시간/일 | 일/월 | 월간 비용 (Vast.ai) |
-|----------|--------|-------|-------------------|
-| 가벼운 테스트 | 2 | 20 | $8 |
-| 정기 개발 | 6 | 22 | $26 |
-| 반일 운영 | 12 | 30 | $72 |
-| 전일 운영 | 24 | 30 | $146 |
+
+| 사용 패턴     | 시간/일 | 일/월 | 월간 비용 (Vast.ai) |
+| ------------- | ------- | ----- | ------------------- |
+| 가벼운 테스트 | 2       | 20    | $8                  |
+| 정기 개발     | 6       | 22    | $26                 |
+| 반일 운영     | 12      | 30    | $72                 |
+| 전일 운영     | 24      | 30    | $146                |
 
 ### 총 비용 예상
 
 #### 시나리오 1: 개발/테스트 (최소 비용)
 
-| 항목 | 비용/월 |
-|------|---------|
-| STT (Whisper 로컬) | $0 |
-| LLM (GPT-3.5-turbo) | $0.50 |
-| TTS (EdgeTTS 무료) | $0 |
-| WebRTC (Free 플랜) | $0 |
-| GPU (Vast.ai 2시간/일) | $8 |
-| **합계** | **$8.50/월** |
+
+| 항목                   | 비용/월      |
+| ---------------------- | ------------ |
+| STT (Whisper 로컬)     | $0           |
+| LLM (GPT-3.5-turbo)    | $0.50        |
+| TTS (EdgeTTS 무료)     | $0           |
+| WebRTC (Free 플랜)     | $0           |
+| GPU (Vast.ai 2시간/일) | $8           |
+| **합계**               | **$8.50/월** |
 
 #### 시나리오 2: 프로덕션 (최적화)
 
-| 항목 | 비용/월 |
-|------|---------|
-| STT (Deepgram Nova-3) | $7.74 |
-| LLM (GPT-4o) | $1.75 |
-| TTS (EdgeTTS 무료) | $0 |
-| WebRTC (Developer) | $29 |
-| GPU (Vast.ai 24/7) | $146 |
-| **합계** | **$184.49/월** |
+
+| 항목                  | 비용/월        |
+| --------------------- | -------------- |
+| STT (Deepgram Nova-3) | $7.74          |
+| LLM (GPT-4o)          | $1.75          |
+| TTS (EdgeTTS 무료)    | $0             |
+| WebRTC (Developer)    | $29            |
+| GPU (Vast.ai 24/7)    | $146           |
+| **합계**              | **$184.49/월** |
 
 #### 시나리오 3: 프로덕션 (고품질)
 
-| 항목 | 비용/월 |
-|------|---------|
-| STT (Deepgram Nova-3) | $7.74 |
-| LLM (GPT-4o) | $1.75 |
-| TTS (ElevenLabs Creator) | $22 |
-| WebRTC (Developer) | $29 |
-| GPU (RunPod A5000 24/7) | $248 |
-| **합계** | **$308.49/월** |
+
+| 항목                     | 비용/월        |
+| ------------------------ | -------------- |
+| STT (Deepgram Nova-3)    | $7.74          |
+| LLM (GPT-4o)             | $1.75          |
+| TTS (ElevenLabs Creator) | $22            |
+| WebRTC (Developer)       | $29            |
+| GPU (RunPod A5000 24/7)  | $248           |
+| **합계**                 | **$308.49/월** |
 
 ### 비용 절감 팁
 
@@ -1294,50 +1357,50 @@ docker-compose restart app
 
 ### v1.0 (현재)
 
-- [x] 실시간 STT (Deepgram)
-- [x] LLM 면접관 (GPT-4o)
-- [x] TTS (ElevenLabs/Edge/Naver)
-- [x] MuseTalk 아바타
-- [x] WebRTC 통합
-- [x] Docker 배포
-- [x] 기본 최적화 (캐싱, 배치)
+- [X]  실시간 STT (Deepgram)
+- [X]  LLM 면접관 (GPT-4o)
+- [X]  TTS (ElevenLabs/Edge/Naver)
+- [X]  MuseTalk 아바타
+- [X]  WebRTC 통합
+- [X]  Docker 배포
+- [X]  기본 최적화 (캐싱, 배치)
 
 ### v1.1 (1-2개월)
 
-- [ ] **다중 언어 지원** (영어, 일본어, 중국어)
-- [ ] **음성 감정 분석** (면접자의 감정 상태 파악)
-- [ ] **실시간 자막** (STT 결과를 화면에 표시)
-- [ ] **대화 요약** (면접 후 자동 피드백 생성)
-- [ ] **Prometheus + Grafana** (모니터링 대시보드)
+- [ ]  **다중 언어 지원** (영어, 일본어, 중국어)
+- [ ]  **음성 감정 분석** (면접자의 감정 상태 파악)
+- [ ]  **실시간 자막** (STT 결과를 화면에 표시)
+- [ ]  **대화 요약** (면접 후 자동 피드백 생성)
+- [ ]  **Prometheus + Grafana** (모니터링 대시보드)
 
 ### v1.2 (3-4개월)
 
-- [ ] **커스텀 아바타 업로드** (사용자 지정 얼굴 이미지)
-- [ ] **다중 면접관 모드** (2명 이상의 AI 면접관)
-- [ ] **이력서 분석** (PDF 업로드 후 맞춤형 질문)
-- [ ] **실시간 화면 공유** (코딩 테스트 지원)
-- [ ] **녹화 기능** (면접 영상 저장 및 재생)
+- [ ]  **커스텀 아바타 업로드** (사용자 지정 얼굴 이미지)
+- [ ]  **다중 면접관 모드** (2명 이상의 AI 면접관)
+- [ ]  **이력서 분석** (PDF 업로드 후 맞춤형 질문)
+- [ ]  **실시간 화면 공유** (코딩 테스트 지원)
+- [ ]  **녹화 기능** (면접 영상 저장 및 재생)
 
 ### v2.0 (6개월+)
 
-- [ ] **온프레미스 모델** (로컬 LLM, 로컬 TTS로 완전 오프라인)
+- [ ]  **온프레미스 모델** (로컬 LLM, 로컬 TTS로 완전 오프라인)
   - Llama 3 70B (LLM)
   - XTTS v2 (TTS)
   - Faster Whisper (STT)
-- [ ] **실시간 제스처 생성** (아바타 손동작, 표정 다양화)
-- [ ] **VR 지원** (Meta Quest, PSVR2)
-- [ ] **모바일 앱** (iOS/Android)
-- [ ] **SaaS 플랫폼** (멀티 테넌트, 구독 결제)
+- [ ]  **실시간 제스처 생성** (아바타 손동작, 표정 다양화)
+- [ ]  **VR 지원** (Meta Quest, PSVR2)
+- [ ]  **모바일 앱** (iOS/Android)
+- [ ]  **SaaS 플랫폼** (멀티 테넌트, 구독 결제)
 
 ### 커뮤니티 요청 기능
 
 다음 기능을 구현할지 투표하세요! (GitHub Discussions):
 
-- [ ] 면접 난이도 조절 (초급/중급/고급)
-- [ ] 업종별 면접관 (IT/금융/마케팅 등)
-- [ ] 그룹 면접 모드 (3-4명 동시 참여)
-- [ ] AI 면접관 성격 설정 (친절/엄격/중립)
-- [ ] 실시간 힌트 제공 (면접자가 막힐 때)
+- [ ]  면접 난이도 조절 (초급/중급/고급)
+- [ ]  업종별 면접관 (IT/금융/마케팅 등)
+- [ ]  그룹 면접 모드 (3-4명 동시 참여)
+- [ ]  AI 면접관 성격 설정 (친절/엄격/중립)
+- [ ]  실시간 힌트 제공 (면접자가 막힐 때)
 
 ---
 
@@ -1364,6 +1427,7 @@ git checkout -b fix/your-bug-fix
 ```
 
 브랜치 네이밍 규칙:
+
 - `feature/` - 새로운 기능
 - `fix/` - 버그 수정
 - `docs/` - 문서 업데이트
@@ -1388,11 +1452,13 @@ pre-commit install
 #### 4. 코드 작성
 
 **코딩 스타일**:
+
 - PEP 8 준수 (Black 포맷터 사용)
 - 타입 힌트 사용 (Python 3.10+)
 - Docstring 작성 (Google 스타일)
 
 예시:
+
 ```python
 from typing import Optional
 
@@ -1462,6 +1528,7 @@ git push origin feature/your-feature-name
 ```
 
 **커밋 메시지 규칙**:
+
 - `feat:` - 새로운 기능
 - `fix:` - 버그 수정
 - `docs:` - 문서 변경
@@ -1471,6 +1538,7 @@ git push origin feature/your-feature-name
 - `chore:` - 빌드/설정 변경
 
 예시:
+
 ```
 feat: add Whisper STT provider support
 
@@ -1607,6 +1675,7 @@ SOFTWARE.
 - [ElevenLabs](https://elevenlabs.io) - 고품질 TTS API
 
 특별히 기여해주신 분들:
+
 - [@contributor1](https://github.com/contributor1) - 초기 아키텍처 설계
 - [@contributor2](https://github.com/contributor2) - TensorRT 최적화
 
@@ -1629,29 +1698,31 @@ SOFTWARE.
 #### 주요 변경 사항
 
 1. **멀티 클라이언트 WebSocket 분리**
+
    - 각 클라이언트마다 고유 SID(Session ID) 할당
    - `socketio.emit(to=sid)` 사용으로 해당 클라이언트에게만 메시지 전송
    - 여러 브라우저 창에서 접속해도 서로 간섭 없이 독립 동작
-
 2. **동시 생성 방지**
+
    - `generation_lock` 추가로 한 번에 한 클라이언트만 립싱크 생성 가능
    - 다른 클라이언트 생성 중일 때 대기 메시지 표시
-
 3. **립싱크 품질 향상**
+
    - 페이드 인/아웃 효과 (8프레임, ~0.3초) - 자연스러운 전환
    - Unsharp mask 샤프닝 (1.5x strength) - VAE 출력 선명도 향상
    - INTER_LANCZOS4 보간법 - 고품질 리사이즈
    - Gaussian blur 커널 크기 감소 (0.05 → 0.025) - 경계 선명도 향상
-
 4. **UI 기능 추가**
+
    - 시스템 프롬프트 편집 기능 (테스트 페이지)
    - API: `GET/POST /api/prompt`
-
 5. **기타 수정**
+
    - `start_server.bat` 인코딩 문제 수정
    - `landmarks[29]` 사용 (코 다리 하단) - 원본 MuseTalk과 동일
 
 #### 관련 파일
+
 - `realtime-interview-avatar/app.py`
 - `realtime-interview-avatar/templates/index.html`
 - `realtime-interview-avatar/start_server.bat`
@@ -1666,14 +1737,16 @@ SOFTWARE.
 #### 주요 변경 사항
 
 1. **CosyVoice 프롬프트 설정 수정**
+
    - 프롬프트 오디오: `여성 50대 면접관` 음성 파일 (6.5초)
    - 프롬프트 텍스트: 오디오 내용과 정확히 일치하도록 수정
    - `"안녕하세요! 면접에 참여해 주셔서 감사합니다. 먼저, 본인에 대해 간단히 소개해 주시겠어요?"`
-
 2. **한국어 숫자 읽기 문제 해결**
+
    - `text_frontend=False` 설정 추가
    - CosyVoice가 한국어를 영어로 인식하여 숫자를 영어로 변환하는 문제 해결
    - 예: "13년" → "thirteen년" 대신 "십삼년"으로 정상 발음
 
 #### 관련 파일
+
 - `realtime-interview-avatar/app.py` (CosyVoice 설정)
