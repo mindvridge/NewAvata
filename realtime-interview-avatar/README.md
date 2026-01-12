@@ -1617,3 +1617,42 @@ SOFTWARE.
 **🐛 버그를 발견하셨나요?** [Issue를 생성해주세요](https://github.com/yourusername/realtime-interview-avatar/issues/new)
 
 **💡 기능 제안이 있으신가요?** [Discussion을 시작해주세요](https://github.com/yourusername/realtime-interview-avatar/discussions/new)
+
+---
+
+## 📝 변경 이력 (Changelog)
+
+### 2026-01-12 - 멀티 클라이언트 WebSocket 분리 (중요 백업 포인트)
+
+**커밋: `1317c10`** - 이 커밋은 중요한 백업 포인트입니다.
+
+#### 주요 변경 사항
+
+1. **멀티 클라이언트 WebSocket 분리**
+   - 각 클라이언트마다 고유 SID(Session ID) 할당
+   - `socketio.emit(to=sid)` 사용으로 해당 클라이언트에게만 메시지 전송
+   - 여러 브라우저 창에서 접속해도 서로 간섭 없이 독립 동작
+
+2. **동시 생성 방지**
+   - `generation_lock` 추가로 한 번에 한 클라이언트만 립싱크 생성 가능
+   - 다른 클라이언트 생성 중일 때 대기 메시지 표시
+
+3. **립싱크 품질 향상**
+   - 페이드 인/아웃 효과 (8프레임, ~0.3초) - 자연스러운 전환
+   - Unsharp mask 샤프닝 (1.5x strength) - VAE 출력 선명도 향상
+   - INTER_LANCZOS4 보간법 - 고품질 리사이즈
+   - Gaussian blur 커널 크기 감소 (0.05 → 0.025) - 경계 선명도 향상
+
+4. **UI 기능 추가**
+   - 시스템 프롬프트 편집 기능 (테스트 페이지)
+   - API: `GET/POST /api/prompt`
+
+5. **기타 수정**
+   - `start_server.bat` 인코딩 문제 수정
+   - `landmarks[29]` 사용 (코 다리 하단) - 원본 MuseTalk과 동일
+
+#### 관련 파일
+- `realtime-interview-avatar/app.py`
+- `realtime-interview-avatar/templates/index.html`
+- `realtime-interview-avatar/start_server.bat`
+- `MuseTalk/musetalk/utils/blending.py` (blur 커널 감소)
