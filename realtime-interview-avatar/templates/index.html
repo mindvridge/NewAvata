@@ -358,6 +358,82 @@
             font-size: 1em;
         }
 
+        /* 프롬프트 설정 영역 */
+        .prompt-section {
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .prompt-toggle {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            cursor: pointer;
+            padding: 10px 0;
+        }
+
+        .prompt-toggle h3 {
+            color: #00d2ff;
+            font-size: 1.2em;
+        }
+
+        .prompt-toggle-icon {
+            font-size: 1.5em;
+            color: #888;
+            transition: transform 0.3s;
+        }
+
+        .prompt-toggle-icon.open {
+            transform: rotate(180deg);
+        }
+
+        .prompt-content {
+            display: none;
+            margin-top: 15px;
+        }
+
+        .prompt-content.open {
+            display: block;
+        }
+
+        .prompt-textarea {
+            width: 100%;
+            min-height: 120px;
+            padding: 14px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+            font-size: 1em;
+            font-family: inherit;
+            resize: vertical;
+        }
+
+        .prompt-textarea:focus {
+            border-color: #00d2ff;
+            outline: none;
+        }
+
+        .prompt-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .prompt-actions button {
+            flex: 1;
+            padding: 10px 16px;
+            font-size: 0.95em;
+        }
+
+        .prompt-status {
+            margin-top: 10px;
+            font-size: 0.9em;
+            color: #4caf50;
+            display: none;
+        }
+
         @media (max-width: 768px) {
             .main-content {
                 grid-template-columns: 1fr;
@@ -423,6 +499,23 @@
                         초기화
                     </button>
                 </div>
+
+                <!-- 프롬프트 설정 섹션 -->
+                <div class="prompt-section">
+                    <div class="prompt-toggle" onclick="togglePrompt()">
+                        <h3>시스템 프롬프트 설정</h3>
+                        <span class="prompt-toggle-icon" id="promptToggleIcon">▼</span>
+                    </div>
+                    <div class="prompt-content" id="promptContent">
+                        <textarea class="prompt-textarea" id="promptTextarea"
+                                  placeholder="AI 면접관의 역할과 행동을 정의하세요..."></textarea>
+                        <div class="prompt-actions">
+                            <button class="primary" onclick="savePrompt()">저장</button>
+                            <button class="secondary" onclick="resetPrompt()">기본값</button>
+                        </div>
+                        <div class="prompt-status" id="promptStatus">프롬프트가 저장되었습니다.</div>
+                    </div>
+                </div>
             </div>
 
             <div class="panel">
@@ -473,10 +566,17 @@
         let streamingMode = true;  // true: 스트리밍 모드, false: 기존 모드
         let streamCtx = null;  // Canvas context
         let streamFps = 25;  // 스트리밍 FPS
+        let clientSid = null;  // 클라이언트 세션 ID
 
         // WebSocket 이벤트
         socket.on('connect', () => {
             console.log('Connected to server');
+        });
+
+        // 서버로부터 SID 수신
+        socket.on('connected', (data) => {
+            clientSid = data.sid;
+            console.log('Client SID:', clientSid);
         });
 
         socket.on('status', (data) => {
@@ -559,6 +659,12 @@
             updateUIState(false);
             document.getElementById('statusText').textContent = '오류: ' + data.message;
             addMessage('system', '오류가 발생했습니다: ' + data.message);
+        });
+
+        socket.on('cancelled', (data) => {
+            isGenerating = false;
+            updateUIState(false);
+            document.getElementById('statusText').textContent = data.message;
         });
 
         // ========== 스트리밍 이벤트 ==========
@@ -848,7 +954,8 @@
                             avatar_path: avatarPath,
                             text: chatData.response,
                             tts_engine: ttsEngine,
-                            tts_voice: ttsVoice
+                            tts_voice: ttsVoice,
+                            sid: clientSid
                         })
                     });
                 } else {
@@ -861,7 +968,8 @@
                             avatar_path: avatarPath,
                             text: chatData.response,
                             tts_engine: ttsEngine,
-                            tts_voice: ttsVoice
+                            tts_voice: ttsVoice,
+                            sid: clientSid
                         })
                     });
                 }
@@ -945,7 +1053,8 @@
                             avatar_path: avatarPath,
                             text: chatData.response,
                             tts_engine: ttsEngine,
-                            tts_voice: ttsVoice
+                            tts_voice: ttsVoice,
+                            sid: clientSid
                         })
                     });
                 } else {
@@ -958,7 +1067,8 @@
                             avatar_path: avatarPath,
                             text: chatData.response,
                             tts_engine: ttsEngine,
-                            tts_voice: ttsVoice
+                            tts_voice: ttsVoice,
+                            sid: clientSid
                         })
                     });
                 }
@@ -984,8 +1094,65 @@
             }
         }
 
+        // ========== 프롬프트 설정 ==========
+        const DEFAULT_PROMPT = `당신은 친절하고 전문적인 AI 면접관입니다.
+면접자의 답변에 대해 적절한 후속 질문을 하거나 피드백을 제공합니다.
+응답은 2-3문장 정도로 간결하게 유지하세요.`;
+
+        function togglePrompt() {
+            const content = document.getElementById('promptContent');
+            const icon = document.getElementById('promptToggleIcon');
+            content.classList.toggle('open');
+            icon.classList.toggle('open');
+        }
+
+        async function loadPrompt() {
+            try {
+                const res = await fetch('/api/prompt');
+                const data = await res.json();
+                document.getElementById('promptTextarea').value = data.prompt;
+            } catch (e) {
+                console.error('Failed to load prompt:', e);
+                document.getElementById('promptTextarea').value = DEFAULT_PROMPT;
+            }
+        }
+
+        async function savePrompt() {
+            const prompt = document.getElementById('promptTextarea').value.trim();
+            if (!prompt) {
+                alert('프롬프트를 입력해주세요.');
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/prompt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt: prompt })
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    const status = document.getElementById('promptStatus');
+                    status.style.display = 'block';
+                    status.textContent = '프롬프트가 저장되었습니다.';
+                    status.style.color = '#4caf50';
+                    setTimeout(() => { status.style.display = 'none'; }, 3000);
+                }
+            } catch (e) {
+                console.error('Failed to save prompt:', e);
+                alert('프롬프트 저장에 실패했습니다.');
+            }
+        }
+
+        function resetPrompt() {
+            document.getElementById('promptTextarea').value = DEFAULT_PROMPT;
+            savePrompt();
+        }
+
         // 초기화
         loadOptions();
+        loadPrompt();
     </script>
 </body>
 </html>

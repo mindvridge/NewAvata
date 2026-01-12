@@ -47,10 +47,12 @@ lipsync_engine = None
 cosyvoice_engine = None  # CosyVoice TTS 엔진
 precomputed_avatars = {}
 current_process = None  # 현재 실행 중인 프로세스
-generation_cancelled = False  # 취소 플래그
-generation_start_time = None  # 생성 시작 시간
 models_loaded = False  # 모델 로드 상태
 cosyvoice_loaded = False  # CosyVoice 로드 상태
+
+# 클라이언트별 상태 관리 (멀티 브라우저 지원)
+client_sessions = {}  # {sid: {'cancelled': False, 'start_time': None, 'generating': False}}
+generation_lock = threading.Lock()  # 동시 생성 방지 락
 
 
 class LipsyncEngine:
@@ -126,11 +128,35 @@ class LipsyncEngine:
         # Timesteps
         self.timesteps = torch.tensor([0], device=self.device)
 
-        # CUDA 워밍업
+        # CUDA 워밍업 (전체 파이프라인)
         print("  CUDA 워밍업 중...")
-        with torch.no_grad():
+        with torch.inference_mode():
+            # 1. VAE 워밍업
             dummy_latent = torch.randn(1, 4, 64, 64).to(self.device, dtype=self.weight_dtype)
             _ = self.vae.decode_latents(dummy_latent)
+
+            # 2. UNet 워밍업 (배치 크기 32로)
+            dummy_latent_batch = torch.randn(32, 8, 64, 64).to(self.device, dtype=self.unet.model.dtype)
+            dummy_audio = torch.randn(32, 50, 384).to(self.device, dtype=self.weight_dtype)
+            dummy_audio_feature = self.pe(dummy_audio)
+            _ = self.unet.model(
+                dummy_latent_batch,
+                self.timesteps,
+                encoder_hidden_states=dummy_audio_feature
+            ).sample
+
+            # 3. 메모리 정리
+            del dummy_latent, dummy_latent_batch, dummy_audio, dummy_audio_feature
+            torch.cuda.empty_cache()
+
+        # FaceParsing 미리 초기화
+        print("  FaceParsing 초기화 중...")
+        global face_parsing
+        if face_parsing is None:
+            face_parsing = FaceParsing(
+                left_cheek_width=90,
+                right_cheek_width=90
+            )
 
         elapsed = time.time() - start_time
         print(f"\n모델 프리로드 완료! ({elapsed:.1f}초)")
@@ -144,21 +170,14 @@ class LipsyncEngine:
         import torch
         import copy
         from musetalk.utils.utils import datagen
+        from concurrent.futures import ThreadPoolExecutor
         global face_parsing
 
         if not self.loaded:
             raise RuntimeError("모델이 로드되지 않았습니다")
 
         start_time = time.time()
-        batch_size = 8  # 배치 크기 (GPU 메모리에 따라 조절)
-
-        # FaceParsing 초기화 (최초 1회)
-        if face_parsing is None:
-            print("FaceParsing 초기화 중...")
-            face_parsing = FaceParsing(
-                left_cheek_width=90,
-                right_cheek_width=90
-            )
+        batch_size = 16  # 배치 크기
 
         # 프리컴퓨트 데이터 로드
         with open(precomputed_path, 'rb') as f:
@@ -195,10 +214,15 @@ class LipsyncEngine:
         output_path.mkdir(parents=True, exist_ok=True)
 
         # latent 리스트를 whisper_chunks 길이에 맞게 순환 확장
+        # CPU에서 로드된 latent를 GPU로 이동
         extended_latent_list = []
         for i in range(num_frames):
             idx = i % len(input_latent_list)
-            extended_latent_list.append(input_latent_list[idx])
+            latent = input_latent_list[idx]
+            # CPU 텐서를 GPU로 이동
+            if isinstance(latent, torch.Tensor):
+                latent = latent.to(self.device, dtype=self.weight_dtype)
+            extended_latent_list.append(latent)
 
         # 배치 처리를 위한 datagen 사용
         print(f"UNet 추론 시작 (batch_size={batch_size})...")
@@ -213,12 +237,9 @@ class LipsyncEngine:
         res_frame_list = []
         total_batches = int(np.ceil(float(num_frames) / batch_size))
 
-        with torch.no_grad():
+        # CUDA 최적화: inference_mode 사용 (더 빠름)
+        with torch.inference_mode():
             for batch_idx, (whisper_batch, latent_batch) in enumerate(tqdm(gen, total=total_batches, desc="UNet 추론")):
-                if generation_cancelled:
-                    print("생성 취소됨")
-                    return None
-
                 # PE 적용
                 audio_feature_batch = self.pe(whisper_batch)
                 latent_batch = latent_batch.to(dtype=self.unet.model.dtype)
@@ -232,8 +253,7 @@ class LipsyncEngine:
 
                 # 배치 VAE 디코딩
                 recon_frames = self.vae.decode_latents(pred_latents)
-                for res_frame in recon_frames:
-                    res_frame_list.append(res_frame)
+                res_frame_list.extend(recon_frames)  # extend 사용 (더 빠름)
 
                 # 진행률 전송
                 progress = int((batch_idx + 1) / total_batches * 50)
@@ -244,48 +264,87 @@ class LipsyncEngine:
                     'elapsed': elapsed
                 })
 
-        # 블렌딩
-        print("블렌딩 시작...")
-        generated_frames = []
+        # GPU 메모리 정리
+        torch.cuda.empty_cache()
 
-        for i, res_frame in enumerate(tqdm(res_frame_list, desc="블렌딩")):
+        # 블렌딩 (병렬 처리)
+        print("블렌딩 시작 (병렬 처리)...")
+
+        # 페이드 인/아웃 프레임 수 (약 0.3초)
+        fade_frames = min(8, len(res_frame_list) // 4)
+        total_frames = len(res_frame_list)
+
+        def blend_single_frame(args):
+            """단일 프레임 블렌딩 함수 (병렬 처리용) - 선명도 최적화"""
+            i, res_frame = args
             idx = i % len(coords_list)
             coord = coords_list[idx]
-            original_frame = copy.deepcopy(frames_list[idx])
+            original_frame = frames_list[idx].copy()
 
-            x1, y1, x2, y2 = coord
-            y2_extended = min(y2 + extra_margin, original_frame.shape[0])
+            x1, y1, x2, y2 = [int(c) for c in coord]
 
-            # 예측 프레임 리사이즈
             try:
+                # 1. VAE 출력에 샤프닝 적용 (선명도 향상)
+                res_frame_uint8 = res_frame.astype(np.uint8)
+
+                # 언샤프 마스크 (Unsharp Mask) - 선명화
+                gaussian = cv2.GaussianBlur(res_frame_uint8, (0, 0), 2.0)
+                sharpened = cv2.addWeighted(res_frame_uint8, 1.5, gaussian, -0.5, 0)
+
+                # 2. 고품질 리사이즈 (LANCZOS4 보간법)
                 pred_frame_resized = cv2.resize(
-                    res_frame.astype(np.uint8),
-                    (x2 - x1, y2_extended - y1)
+                    sharpened,
+                    (x2 - x1, y2 - y1),
+                    interpolation=cv2.INTER_LANCZOS4
                 )
             except Exception as e:
-                print(f"리사이즈 오류: {e}")
-                generated_frames.append(original_frame)
-                continue
+                return (i, original_frame)
 
             # 공식 get_image 블렌딩 (V1.5 jaw 모드)
             result_frame = get_image(
                 original_frame,
                 pred_frame_resized,
-                [x1, y1, x2, y2_extended],
+                [x1, y1, x2, y2],
                 mode="jaw",
                 fp=face_parsing
             )
 
-            generated_frames.append(result_frame)
+            # 페이드 인/아웃 적용
+            if i < fade_frames:
+                alpha = i / fade_frames
+                result_frame = cv2.addWeighted(
+                    original_frame, 1 - alpha,
+                    result_frame, alpha, 0
+                )
+            elif i >= total_frames - fade_frames:
+                remaining = total_frames - i - 1
+                alpha = remaining / fade_frames
+                result_frame = cv2.addWeighted(
+                    original_frame, 1 - alpha,
+                    result_frame, alpha, 0
+                )
 
-            # 진행률 전송
-            progress = 50 + int((i + 1) / len(res_frame_list) * 30)
-            elapsed = time.time() - start_time
-            socketio.emit('status', {
-                'message': f'블렌딩 중... {i+1}/{len(res_frame_list)}',
-                'progress': progress,
-                'elapsed': elapsed
-            })
+            return (i, result_frame)
+
+        # 병렬 블렌딩 실행 (8개 스레드로 증가)
+        generated_frames = [None] * total_frames
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            results = list(tqdm(
+                executor.map(blend_single_frame, enumerate(res_frame_list)),
+                total=total_frames,
+                desc="블렌딩"
+            ))
+
+        # 결과 정렬
+        for idx, frame in results:
+            generated_frames[idx] = frame
+
+        # 진행률 전송
+        socketio.emit('status', {
+            'message': f'블렌딩 완료',
+            'progress': 80,
+            'elapsed': time.time() - start_time
+        })
 
         # 비디오 저장
         print("비디오 저장 중...")
@@ -604,13 +663,14 @@ def generate_tts_audio(text, engine, voice, output_path):
 @app.route('/api/generate', methods=['POST'])
 def api_generate():
     """립싱크 비디오 생성 API"""
-    global current_process, generation_cancelled, lipsync_engine, generation_start_time
+    global current_process, lipsync_engine
 
     data = request.json
     avatar_path = data.get('avatar_path')
     text = data.get('text', '')
     tts_engine = data.get('tts_engine', DEFAULT_TTS_ENGINE)
     tts_voice = data.get('tts_voice', DEFAULT_TTS_VOICE)
+    client_sid = data.get('sid')  # 클라이언트 SID
 
     if not avatar_path:
         return jsonify({"error": "avatar_path가 필요합니다"}), 400
@@ -618,34 +678,54 @@ def api_generate():
     if not text:
         return jsonify({"error": "text가 필요합니다"}), 400
 
-    generation_cancelled = False
-    generation_start_time = time.time()
+    if not client_sid:
+        return jsonify({"error": "sid가 필요합니다"}), 400
 
-    def generate_async():
-        global generation_cancelled, generation_start_time
+    # 동시 생성 방지
+    with generation_lock:
+        # 이미 생성 중인 클라이언트가 있는지 확인
+        for sid, session in client_sessions.items():
+            if session.get('generating'):
+                if sid == client_sid:
+                    return jsonify({"error": "이미 생성 중입니다"}), 400
+                else:
+                    return jsonify({"error": "다른 클라이언트가 생성 중입니다. 잠시 후 다시 시도해주세요."}), 400
 
+        # 클라이언트 세션 초기화
+        if client_sid in client_sessions:
+            client_sessions[client_sid]['cancelled'] = False
+            client_sessions[client_sid]['start_time'] = time.time()
+            client_sessions[client_sid]['generating'] = True
+
+    def generate_async(sid):
         try:
+            if sid not in client_sessions:
+                print(f"[ERROR] SID {sid} not in client_sessions")
+                return
+
+            start_time = client_sessions[sid]['start_time']
+
             # 1. TTS 생성
             engine_name = TTS_ENGINES.get(tts_engine, {}).get('name', tts_engine)
-            socketio.emit('status', {'message': f'TTS 생성 중 ({engine_name})...', 'progress': 0, 'elapsed': 0})
+            socketio.emit('status', {'message': f'TTS 생성 중 ({engine_name})...', 'progress': 0, 'elapsed': 0}, to=sid)
             tts_output = Path("assets/audio/tts_output.wav")
 
             success = generate_tts_audio(text, tts_engine, tts_voice, tts_output)
 
             if not success:
-                socketio.emit('error', {'message': f'TTS 생성 실패 ({engine_name})'})
+                socketio.emit('error', {'message': f'TTS 생성 실패 ({engine_name})'}, to=sid)
                 return
 
-            if generation_cancelled:
-                socketio.emit('cancelled', {'message': '생성이 취소되었습니다'})
+            if sid in client_sessions and client_sessions[sid]['cancelled']:
+                socketio.emit('cancelled', {'message': '생성이 취소되었습니다'}, to=sid)
                 return
 
             # 2. 립싱크 생성
             socketio.emit('status', {
                 'message': '립싱크 생성 시작...',
                 'progress': 10,
-                'elapsed': time.time() - generation_start_time
-            })
+                'elapsed': time.time() - start_time
+            }, to=sid)
 
             output_video = lipsync_engine.generate_lipsync(
                 avatar_path,
@@ -653,26 +733,30 @@ def api_generate():
                 output_dir="results/realtime"
             )
 
-            if generation_cancelled:
-                socketio.emit('cancelled', {'message': '생성이 취소되었습니다'})
+            if sid in client_sessions and client_sessions[sid]['cancelled']:
+                socketio.emit('cancelled', {'message': '생성이 취소되었습니다'}, to=sid)
                 return
 
             if output_video:
-                elapsed = time.time() - generation_start_time
-                socketio.emit('status', {'message': '완료!', 'progress': 100, 'elapsed': elapsed})
+                elapsed = time.time() - start_time
+                socketio.emit('status', {'message': '완료!', 'progress': 100, 'elapsed': elapsed}, to=sid)
                 socketio.emit('complete', {
                     'video_path': 'results/realtime/output_with_audio.mp4',
                     'elapsed': elapsed
-                })
+                }, to=sid)
             else:
-                socketio.emit('error', {'message': '립싱크 생성 실패'})
+                socketio.emit('error', {'message': '립싱크 생성 실패'}, to=sid)
 
         except Exception as e:
             import traceback
             traceback.print_exc()
-            socketio.emit('error', {'message': str(e)})
+            socketio.emit('error', {'message': str(e)}, to=sid)
+        finally:
+            # 생성 완료 표시
+            if sid in client_sessions:
+                client_sessions[sid]['generating'] = False
 
-    thread = threading.Thread(target=generate_async)
+    thread = threading.Thread(target=generate_async, args=(client_sid,))
     thread.start()
 
     return jsonify({"status": "started"})
@@ -681,18 +765,47 @@ def api_generate():
 @app.route('/api/cancel', methods=['POST'])
 def api_cancel():
     """생성 취소 API"""
-    global generation_cancelled
-    generation_cancelled = True
+    data = request.json
+    client_sid = data.get('sid') if data else None
+
+    if client_sid and client_sid in client_sessions:
+        client_sessions[client_sid]['cancelled'] = True
+
     return jsonify({"status": "cancelled"})
 
 
 # 대화 기록 저장
 conversation_history = []
 
-# LLM 시스템 프롬프트
-SYSTEM_PROMPT = """당신은 친절하고 전문적인 AI 면접관입니다.
+# LLM 시스템 프롬프트 (런타임에 수정 가능)
+current_system_prompt = """당신은 친절하고 전문적인 AI 면접관입니다.
 면접자의 답변에 대해 적절한 후속 질문을 하거나 피드백을 제공합니다.
 응답은 2-3문장 정도로 간결하게 유지하세요."""
+
+# 이전 코드 호환성을 위한 변수
+SYSTEM_PROMPT = current_system_prompt
+
+
+@app.route('/api/prompt', methods=['GET'])
+def get_prompt():
+    """현재 시스템 프롬프트 조회"""
+    global current_system_prompt
+    return jsonify({"prompt": current_system_prompt})
+
+
+@app.route('/api/prompt', methods=['POST'])
+def set_prompt():
+    """시스템 프롬프트 수정"""
+    global current_system_prompt, SYSTEM_PROMPT
+    data = request.json
+    new_prompt = data.get('prompt', '').strip()
+
+    if not new_prompt:
+        return jsonify({"error": "프롬프트가 필요합니다"}), 400
+
+    current_system_prompt = new_prompt
+    SYSTEM_PROMPT = new_prompt
+    return jsonify({"success": True, "prompt": current_system_prompt})
 
 
 @app.route('/api/chat', methods=['POST'])
@@ -726,7 +839,7 @@ def api_chat():
                 json={
                     "model": "gpt-4o-mini",
                     "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "system", "content": current_system_prompt},
                         *conversation_history[-10:]  # 최근 10개 대화만 유지
                     ],
                     "max_tokens": 200,
@@ -982,7 +1095,7 @@ def api_v2_chat_and_lipsync():
                 json={
                     "model": "gpt-4o-mini",
                     "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "system", "content": current_system_prompt},
                         *conversation_history[-10:]
                     ],
                     "max_tokens": 200,
@@ -1086,13 +1199,14 @@ def api_v2_status():
 @app.route('/api/generate_streaming', methods=['POST'])
 def api_generate_streaming():
     """스트리밍 립싱크 비디오 생성 API (일반 생성과 동일하게 동작)"""
-    global current_process, generation_cancelled, lipsync_engine, generation_start_time
+    global current_process, lipsync_engine
 
     data = request.json
     avatar_path = data.get('avatar_path')
     text = data.get('text', '')
     tts_engine = data.get('tts_engine', DEFAULT_TTS_ENGINE)
     tts_voice = data.get('tts_voice', DEFAULT_TTS_VOICE)
+    client_sid = data.get('sid')  # 클라이언트 SID
 
     if not avatar_path:
         return jsonify({"error": "avatar_path가 필요합니다"}), 400
@@ -1100,34 +1214,51 @@ def api_generate_streaming():
     if not text:
         return jsonify({"error": "text가 필요합니다"}), 400
 
-    generation_cancelled = False
-    generation_start_time = time.time()
+    if not client_sid:
+        return jsonify({"error": "sid가 필요합니다"}), 400
 
-    def generate_streaming_async():
-        global generation_cancelled, generation_start_time
+    # 동시 생성 방지
+    with generation_lock:
+        for sid, session in client_sessions.items():
+            if session.get('generating'):
+                if sid == client_sid:
+                    return jsonify({"error": "이미 생성 중입니다"}), 400
+                else:
+                    return jsonify({"error": "다른 클라이언트가 생성 중입니다. 잠시 후 다시 시도해주세요."}), 400
 
+        if client_sid in client_sessions:
+            client_sessions[client_sid]['cancelled'] = False
+            client_sessions[client_sid]['start_time'] = time.time()
+            client_sessions[client_sid]['generating'] = True
+
+    def generate_streaming_async(sid):
         try:
+            if sid not in client_sessions:
+                return
+
+            start_time = client_sessions[sid]['start_time']
+
             # 1. TTS 생성
             engine_name = TTS_ENGINES.get(tts_engine, {}).get('name', tts_engine)
-            socketio.emit('status', {'message': f'TTS 생성 중 ({engine_name})...', 'progress': 0, 'elapsed': 0})
+            socketio.emit('status', {'message': f'TTS 생성 중 ({engine_name})...', 'progress': 0, 'elapsed': 0}, to=sid)
             tts_output = Path("assets/audio/tts_output.wav")
 
             success = generate_tts_audio(text, tts_engine, tts_voice, tts_output)
 
             if not success:
-                socketio.emit('error', {'message': f'TTS 생성 실패 ({engine_name})'})
+                socketio.emit('error', {'message': f'TTS 생성 실패 ({engine_name})'}, to=sid)
                 return
 
-            if generation_cancelled:
-                socketio.emit('cancelled', {'message': '생성이 취소되었습니다'})
+            if sid in client_sessions and client_sessions[sid]['cancelled']:
+                socketio.emit('cancelled', {'message': '생성이 취소되었습니다'}, to=sid)
                 return
 
             # 2. 립싱크 생성
             socketio.emit('status', {
                 'message': '립싱크 생성 시작...',
                 'progress': 10,
-                'elapsed': time.time() - generation_start_time
-            })
+                'elapsed': time.time() - start_time
+            }, to=sid)
 
             output_video = lipsync_engine.generate_lipsync(
                 avatar_path,
@@ -1135,26 +1266,29 @@ def api_generate_streaming():
                 output_dir="results/realtime"
             )
 
-            if generation_cancelled:
-                socketio.emit('cancelled', {'message': '생성이 취소되었습니다'})
+            if sid in client_sessions and client_sessions[sid]['cancelled']:
+                socketio.emit('cancelled', {'message': '생성이 취소되었습니다'}, to=sid)
                 return
 
             if output_video:
-                elapsed = time.time() - generation_start_time
-                socketio.emit('status', {'message': '완료!', 'progress': 100, 'elapsed': elapsed})
+                elapsed = time.time() - start_time
+                socketio.emit('status', {'message': '완료!', 'progress': 100, 'elapsed': elapsed}, to=sid)
                 socketio.emit('complete', {
                     'video_path': 'results/realtime/output_with_audio.mp4',
                     'elapsed': elapsed
-                })
+                }, to=sid)
             else:
-                socketio.emit('error', {'message': '립싱크 생성 실패'})
+                socketio.emit('error', {'message': '립싱크 생성 실패'}, to=sid)
 
         except Exception as e:
             import traceback
             traceback.print_exc()
-            socketio.emit('error', {'message': str(e)})
+            socketio.emit('error', {'message': str(e)}, to=sid)
+        finally:
+            if sid in client_sessions:
+                client_sessions[sid]['generating'] = False
 
-    thread = threading.Thread(target=generate_streaming_async)
+    thread = threading.Thread(target=generate_streaming_async, args=(client_sid,))
     thread.start()
 
     return jsonify({"status": "started"})
@@ -1191,14 +1325,21 @@ def serve_assets(filename):
 @socketio.on('connect')
 def handle_connect():
     """WebSocket 연결"""
-    print('Client connected')
-    emit('connected', {'status': 'ok', 'models_loaded': models_loaded})
+    from flask import request as flask_request
+    sid = flask_request.sid
+    client_sessions[sid] = {'cancelled': False, 'start_time': None, 'generating': False}
+    print(f'Client connected: {sid}')
+    emit('connected', {'status': 'ok', 'models_loaded': models_loaded, 'sid': sid})
 
 
 @socketio.on('disconnect')
 def handle_disconnect():
     """WebSocket 연결 해제"""
-    print('Client disconnected')
+    from flask import request as flask_request
+    sid = flask_request.sid
+    if sid in client_sessions:
+        del client_sessions[sid]
+    print(f'Client disconnected: {sid}')
 
 
 def kill_existing_server(port=5000):
