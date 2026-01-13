@@ -53,8 +53,8 @@ WORKDIR /app
 # PyTorch nightly를 사용하여 RTX 5060 Ti (sm_120 아키텍처) 지원
 # =============================================================================
 RUN pip install --no-cache-dir --pre \
-    torch==2.7.0.dev20250310+cu124 \
-    torchvision==0.22.0.dev20250310+cu124 \
+    torch==2.7.0.dev20250226+cu124 \
+    torchvision==0.22.0.dev20250226+cu124 \
     --index-url https://download.pytorch.org/whl/nightly/cu124
 
 # torchaudio는 stable 버전 설치 (nightly에 없음)
