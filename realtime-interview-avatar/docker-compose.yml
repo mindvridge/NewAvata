@@ -24,7 +24,7 @@ services:
     container_name: avatar-server
     restart: unless-stopped
 
-    # GPU 지원 (NVIDIA)
+    # GPU 지원 (RTX 50 시리즈 - CUDA 12.4, PyTorch 2.5.1)
     deploy:
       resources:
         reservations:
