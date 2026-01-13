@@ -57,12 +57,13 @@ RUN pip install --no-cache-dir --pre \
     torch==2.7.0.dev20250310+cu124 \
     --index-url https://download.pytorch.org/whl/nightly/cu124
 
-# torchvision과 torchaudio 별도 설치
-RUN pip install --no-cache-dir --pre \
+# torchvision 설치 (의존성 검사 무시)
+RUN pip install --no-cache-dir --no-deps --pre \
     torchvision==0.22.0.dev20250226+cu124 \
     --index-url https://download.pytorch.org/whl/nightly/cu124
 
-RUN pip install --no-cache-dir \
+# torchaudio stable 버전 설치
+RUN pip install --no-cache-dir --no-deps \
     torchaudio==2.5.1 \
     --index-url https://download.pytorch.org/whl/cu124
 
