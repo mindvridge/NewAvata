@@ -1362,7 +1362,15 @@ def kill_existing_server(port=5000):
 
 
 if __name__ == '__main__':
-    os.chdir("c:/NewAvata/NewAvata/realtime-interview-avatar")
+    # Docker 환경 감지 및 작업 디렉토리 설정
+    if os.path.exists("/app/realtime-interview-avatar"):
+        # Docker 환경
+        os.chdir("/app/realtime-interview-avatar")
+    else:
+        # 로컬 환경
+        local_path = "c:/NewAvata/NewAvata/realtime-interview-avatar"
+        if os.path.exists(local_path):
+            os.chdir(local_path)
 
     # 기존 서버 종료
     kill_existing_server(5000)

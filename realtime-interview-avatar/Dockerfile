@@ -78,6 +78,7 @@ RUN pip install --no-cache-dir \
 # MuseTalk 의존성
 # =============================================================================
 RUN pip install --no-cache-dir \
+    "numpy<2.0.0" \
     diffusers==0.30.2 \
     accelerate==0.28.0 \
     opencv-python==4.9.0.80 \
