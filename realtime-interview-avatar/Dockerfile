@@ -3,7 +3,7 @@
 # MuseTalk V1.5 + CosyVoice 2.0 TTS
 # =============================================================================
 
-FROM nvidia/cuda:12.1.0-cudnn8-devel-ubuntu22.04
+FROM nvidia/cuda:12.4.0-cudnn-devel-ubuntu22.04
 
 # 환경 변수 설정
 ENV DEBIAN_FRONTEND=noninteractive
@@ -49,13 +49,13 @@ RUN pip install --upgrade pip setuptools wheel
 WORKDIR /app
 
 # =============================================================================
-# PyTorch 및 기본 의존성 설치 (CUDA 12.1)
+# PyTorch 및 기본 의존성 설치 (CUDA 12.4 - RTX 50 시리즈 지원)
 # =============================================================================
 RUN pip install --no-cache-dir \
-    torch==2.3.1 \
-    torchvision==0.18.1 \
-    torchaudio==2.3.1 \
-    --index-url https://download.pytorch.org/whl/cu121
+    torch==2.5.1 \
+    torchvision==0.20.1 \
+    torchaudio==2.5.1 \
+    --index-url https://download.pytorch.org/whl/cu124
 
 # =============================================================================
 # CosyVoice 의존성
@@ -105,11 +105,10 @@ RUN pip install --no-cache-dir \
     openai>=1.0.0
 
 # =============================================================================
-# ONNX Runtime GPU (Linux용)
+# ONNX Runtime GPU (CUDA 12.4 호환)
 # =============================================================================
 RUN pip install --no-cache-dir \
-    onnxruntime-gpu==1.18.0 \
-    --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
+    onnxruntime-gpu==1.20.0
 
 # =============================================================================
 # 프로젝트 파일 복사
