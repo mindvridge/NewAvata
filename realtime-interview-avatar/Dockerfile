@@ -55,8 +55,12 @@ WORKDIR /app
 RUN pip install --no-cache-dir --pre \
     torch \
     torchvision \
-    torchaudio \
     --index-url https://download.pytorch.org/whl/nightly/cu124
+
+# torchaudio는 stable 버전 설치 (nightly에 없음)
+RUN pip install --no-cache-dir \
+    torchaudio \
+    --index-url https://download.pytorch.org/whl/cu124
 
 # =============================================================================
 # CosyVoice 의존성
