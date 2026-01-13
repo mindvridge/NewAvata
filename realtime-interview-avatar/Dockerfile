@@ -3,7 +3,7 @@
 # MuseTalk V1.5 + CosyVoice 2.0 TTS
 # =============================================================================
 
-FROM nvidia/cuda:12.4.0-cudnn-devel-ubuntu22.04
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
 
 # 환경 변수 설정
 ENV DEBIAN_FRONTEND=noninteractive
