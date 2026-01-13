@@ -62,10 +62,8 @@ RUN pip install --no-cache-dir --no-deps --pre \
     torchvision==0.22.0.dev20250226+cu124 \
     --index-url https://download.pytorch.org/whl/nightly/cu124
 
-# torchaudio stable 버전 설치
-RUN pip install --no-cache-dir --no-deps \
-    torchaudio==2.5.1 \
-    --index-url https://download.pytorch.org/whl/cu124
+# torchaudio는 PyTorch nightly와 ABI 호환 문제로 건너뛰기
+# CosyVoice는 torchaudio 없이도 동작 가능 (필수 아님)
 
 # =============================================================================
 # CosyVoice 의존성
