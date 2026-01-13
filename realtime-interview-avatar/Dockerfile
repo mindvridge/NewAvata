@@ -50,12 +50,13 @@ WORKDIR /app
 
 # =============================================================================
 # PyTorch 및 기본 의존성 설치 (CUDA 12.4 - RTX 50 시리즈 지원)
+# PyTorch nightly를 사용하여 RTX 5060 Ti (sm_120 아키텍처) 지원
 # =============================================================================
-RUN pip install --no-cache-dir \
-    torch==2.5.1 \
-    torchvision==0.20.1 \
-    torchaudio==2.5.1 \
-    --index-url https://download.pytorch.org/whl/cu124
+RUN pip install --no-cache-dir --pre \
+    torch \
+    torchvision \
+    torchaudio \
+    --index-url https://download.pytorch.org/whl/nightly/cu124
 
 # =============================================================================
 # CosyVoice 의존성
