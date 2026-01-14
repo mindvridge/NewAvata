@@ -633,8 +633,10 @@ def generate_tts_audio(text, engine, voice, output_path):
                 rtf = elapsed / speech_len
                 print(f"CosyVoice TTS 생성 완료 (길이: {speech_len:.2f}초, RTF: {rtf:.3f})")
 
-                # WAV로 저장
-                torchaudio.save(str(output_path), output_audio, cosyvoice_engine.sample_rate)
+                # WAV로 저장 (soundfile 사용하여 torchcodec 의존성 회피)
+                import soundfile as sf
+                audio_numpy = output_audio.squeeze().cpu().numpy()
+                sf.write(str(output_path), audio_numpy, cosyvoice_engine.sample_rate)
 
                 # 16kHz로 리샘플링 (립싱크 호환)
                 temp_path = str(output_path).replace('.wav', '_temp.wav')

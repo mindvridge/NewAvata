@@ -43,6 +43,10 @@ services:
       - COSYVOICE_MODEL_PATH=/app/CosyVoice/pretrained_models/CosyVoice2-0.5B
       - MUSETALK_PATH=/app/MuseTalk
       - COSYVOICE_PATH=/app/CosyVoice
+      # torchaudio backend 설정 (torchcodec 대신 soundfile 사용)
+      - TORCHAUDIO_USE_BACKEND_DISPATCHER=0
+      # PyTorch CUDA 12.9 라이브러리 경로 (RTX 5060 Ti sm_120 지원)
+      - LD_LIBRARY_PATH=/usr/local/lib/python3.10/dist-packages/nvidia/nvjitlink/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cublas/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cudnn/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64
 
     volumes:
       # MuseTalk 모델 (필수)
