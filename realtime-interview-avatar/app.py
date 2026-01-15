@@ -27,10 +27,6 @@ load_dotenv()
 MUSETALK_PATH = Path(os.getenv('MUSETALK_PATH', 'c:/NewAvata/NewAvata/MuseTalk'))
 sys.path.insert(0, str(MUSETALK_PATH))
 
-# CosyVoice 경로 추가 (환경변수 또는 기본값)
-COSYVOICE_PATH = Path(os.getenv('COSYVOICE_PATH', 'c:/NewAvata/NewAvata/CosyVoice'))
-sys.path.insert(0, str(COSYVOICE_PATH))
-
 # 공식 MuseTalk 블렌딩 모듈
 from musetalk.utils.blending import get_image
 from musetalk.utils.face_parsing import FaceParsing
@@ -44,11 +40,9 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 
 # 전역 상태
 lipsync_engine = None
-cosyvoice_engine = None  # CosyVoice TTS 엔진
 precomputed_avatars = {}
 current_process = None  # 현재 실행 중인 프로세스
 models_loaded = False  # 모델 로드 상태
-cosyvoice_loaded = False  # CosyVoice 로드 상태
 
 # 클라이언트별 상태 관리 (멀티 브라우저 지원)
 client_sessions = {}  # {sid: {'cancelled': False, 'start_time': None, 'generating': False}}
@@ -165,8 +159,16 @@ class LipsyncEngine:
         self.loaded = True
         return True
 
-    def generate_lipsync(self, precomputed_path, audio_path, output_dir="results/realtime", fps=25):
-        """프리컴퓨트된 아바타로 립싱크 생성 (배치 처리 + 공식 MuseTalk 블렌딩)"""
+    def generate_lipsync(self, precomputed_path, audio_input, output_dir="results/realtime", fps=25):
+        """
+        프리컴퓨트된 아바타로 립싱크 생성 (배치 처리 + 공식 MuseTalk 블렌딩)
+
+        Args:
+            precomputed_path: 프리컴퓨트 데이터 경로
+            audio_input: 오디오 파일 경로(str) 또는 (audio_numpy, sample_rate) 튜플
+            output_dir: 출력 디렉토리
+            fps: FPS (프리컴퓨트 데이터에서 자동 가져옴)
+        """
         import torch
         import copy
         from musetalk.utils.utils import datagen
@@ -177,7 +179,7 @@ class LipsyncEngine:
             raise RuntimeError("모델이 로드되지 않았습니다")
 
         start_time = time.time()
-        batch_size = 16  # 배치 크기
+        batch_size = 16  # 배치 크기 (가이드 권장값)
 
         # 프리컴퓨트 데이터 로드
         with open(precomputed_path, 'rb') as f:
@@ -192,9 +194,9 @@ class LipsyncEngine:
         fps = precomputed.get('fps', 25)
         extra_margin = 10  # V1.5 bbox 하단 확장
 
-        # 오디오 처리
+        # 오디오 처리 (파일 경로 또는 numpy array)
         print("오디오 whisper 특징 추출 중...")
-        whisper_input_features, librosa_length = self.audio_processor.get_audio_feature(audio_path)
+        whisper_input_features, librosa_length = self.audio_processor.get_audio_feature(audio_input)
         whisper_chunks = self.audio_processor.get_whisper_chunk(
             whisper_input_features,
             self.device,
@@ -326,9 +328,9 @@ class LipsyncEngine:
 
             return (i, result_frame)
 
-        # 병렬 블렌딩 실행 (8개 스레드로 증가)
+        # 병렬 블렌딩 실행 (8개 스레드)
         generated_frames = [None] * total_frames
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=8) as executor:
             results = list(tqdm(
                 executor.map(blend_single_frame, enumerate(res_frame_list)),
                 total=total_frames,
@@ -367,15 +369,29 @@ class LipsyncEngine:
             'elapsed': time.time() - start_time
         })
 
+        # audio_input이 튜플이면 임시 파일 생성
+        if isinstance(audio_input, tuple):
+            import soundfile as sf
+            temp_audio = str(output_path / "temp_audio.wav")
+            audio_numpy, sample_rate = audio_input
+            sf.write(temp_audio, audio_numpy, sample_rate)
+            audio_file_path = temp_audio
+        else:
+            audio_file_path = audio_input
+
         subprocess.run([
             'ffmpeg', '-y',
             '-i', temp_video,
-            '-i', audio_path,
+            '-i', audio_file_path,
             '-c:v', 'libx264',
             '-c:a', 'aac',
             '-shortest',
             final_video
         ], capture_output=True)
+
+        # 임시 오디오 파일 삭제
+        if isinstance(audio_input, tuple) and os.path.exists(temp_audio):
+            os.remove(temp_audio)
 
         # 임시 파일 삭제
         if os.path.exists(temp_video):
@@ -388,31 +404,21 @@ class LipsyncEngine:
         return final_video
 
 
-# TTS 엔진 설정 (CosyVoice 기본)
+# TTS 엔진 설정
 TTS_ENGINES = {
-    'cosyvoice': {
-        'name': 'CosyVoice 2.0',
-        'voices': ['zero-shot'],
-        'default': True
-    },
     'elevenlabs': {
         'name': 'ElevenLabs',
-        'voices': ['Custom']
+        'voices': ['Custom'],
+        'default': True
     }
 }
 
 # 기본 TTS 엔진
-DEFAULT_TTS_ENGINE = 'cosyvoice'
-DEFAULT_TTS_VOICE = 'zero-shot'
+DEFAULT_TTS_ENGINE = 'elevenlabs'
+DEFAULT_TTS_VOICE = 'Custom'
 
 # API 키 설정
 ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY', '')
-
-# CosyVoice 설정
-COSYVOICE_MODEL_PATH = os.getenv('COSYVOICE_MODEL_PATH', 'c:/NewAvata/NewAvata/CosyVoice/pretrained_models/CosyVoice2-0.5B')
-COSYVOICE_PROMPT_AUDIO = 'assets/images/ElevenLabs_2026-01-12T04_48_56_여성 50대 면접관_gen_sp100_s50_sb75_se0_b_m2.mp3'
-COSYVOICE_PROMPT_TEXT = "안녕하세요! 면접에 참여해 주셔서 감사합니다. 먼저, 본인에 대해 간단히 소개해 주시겠어요?"
-cosyvoice_prompt_wav_path = None  # 캐싱된 프롬프트 오디오 경로 (24kHz WAV)
 
 
 def get_available_avatars():
@@ -489,54 +495,13 @@ def api_tts_engines():
     """TTS 엔진 목록 API"""
     engines = []
     for engine_id, engine_info in TTS_ENGINES.items():
-        # CosyVoice 가용성 확인
-        if engine_id == 'cosyvoice':
-            available = os.path.exists(COSYVOICE_MODEL_PATH)
-        else:
-            available = True
-
         engines.append({
             'id': engine_id,
             'name': engine_info['name'],
             'voices': engine_info['voices'],
-            'available': available
+            'available': True
         })
     return jsonify(engines)
-
-
-def load_cosyvoice_model():
-    """CosyVoice 모델 로드 (화자 프리로딩 없이 원본 방식 사용)"""
-    global cosyvoice_engine, cosyvoice_loaded, cosyvoice_prompt_wav_path
-
-    if cosyvoice_loaded and cosyvoice_engine is not None:
-        return
-
-    print("CosyVoice 모델 로드 중...")
-    try:
-        from cosyvoice.cli.cosyvoice import CosyVoice2
-
-        cosyvoice_engine = CosyVoice2(COSYVOICE_MODEL_PATH, fp16=True)
-        print(f"CosyVoice 모델 로드 완료! (샘플레이트: {cosyvoice_engine.sample_rate})")
-
-        # 프롬프트 오디오 사전 변환 (24kHz WAV로 캐싱 - CosyVoice2 샘플레이트)
-        print("프롬프트 오디오 사전 변환 중...")
-        cosyvoice_prompt_wav_path = "assets/audio/cosyvoice_prompt_24k.wav"
-        subprocess.run(
-            f'ffmpeg -y -i "{COSYVOICE_PROMPT_AUDIO}" -ar 24000 -t 15 "{cosyvoice_prompt_wav_path}"',
-            shell=True, capture_output=True
-        )
-        print(f"프롬프트 오디오 준비 완료: {cosyvoice_prompt_wav_path}")
-
-        # NOTE: add_zero_shot_spk는 prompt_text 토큰까지 캐싱하여 TTS 품질 문제 발생
-        # 원본 zero-shot 방식 사용 (매번 prompt_text + prompt_wav 전달)
-
-        cosyvoice_loaded = True
-
-    except Exception as e:
-        print(f"CosyVoice 모델 로드 실패: {e}")
-        import traceback
-        traceback.print_exc()
-        cosyvoice_loaded = False
 
 
 def get_elevenlabs_voice_id(voice_name):
@@ -551,19 +516,29 @@ def get_elevenlabs_voice_id(voice_name):
     return voice_ids.get(voice_name, voice_ids['Custom'])
 
 
-def generate_tts_audio(text, engine, voice, output_path):
-    """TTS 오디오 생성"""
+def generate_tts_audio(text, engine, voice, output_path=None):
+    """
+    TTS 오디오 생성
+
+    Returns:
+        tuple: (audio_numpy, sample_rate) - 성공 시 numpy array와 샘플레이트 반환
+        None: 실패 시
+    """
     import torch
     import torchaudio
 
     print(f"[TTS] engine={engine}, voice={voice}, text={text[:50]}...")
 
     if engine == 'elevenlabs':
-        # ElevenLabs TTS
+        # ElevenLabs TTS (스트리밍 + Flash v2.5 저지연 모델)
         import requests
+        import io
+        import soundfile as sf
+        from pydub import AudioSegment
 
         voice_id = get_elevenlabs_voice_id(voice)
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+        # 스트리밍 엔드포인트 사용
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
 
         headers = {
             "Accept": "audio/mpeg",
@@ -573,94 +548,52 @@ def generate_tts_audio(text, engine, voice, output_path):
 
         data = {
             "text": text,
-            "model_id": "eleven_multilingual_v2",
+            "model_id": "eleven_flash_v2_5",  # 저지연 Flash 모델 (32개 언어, ~75ms)
             "voice_settings": {
                 "stability": 0.5,
                 "similarity_boost": 0.75
             }
         }
 
-        response = requests.post(url, json=data, headers=headers)
+        # 스트리밍 요청
+        start_time = time.time()
+        response = requests.post(url, json=data, headers=headers, stream=True)
 
         if response.status_code == 200:
-            mp3_path = str(output_path).replace('.wav', '.mp3')
-            with open(mp3_path, 'wb') as f:
-                f.write(response.content)
+            # 스트리밍 데이터 수집
+            audio_chunks = []
+            for chunk in response.iter_content(chunk_size=1024):
+                if chunk:
+                    audio_chunks.append(chunk)
 
-            # MP3 -> WAV 변환 (16kHz)
-            subprocess.run(
-                f'ffmpeg -y -i "{mp3_path}" -ar 16000 "{output_path}"',
-                shell=True, capture_output=True
-            )
-            return os.path.exists(output_path)
-        return False
-
-    elif engine == 'cosyvoice':
-        # CosyVoice 2.0 TTS (원본 zero-shot 방식 - 매번 prompt_text + prompt_wav 전달)
-        global cosyvoice_engine, cosyvoice_loaded, cosyvoice_prompt_wav_path
-
-        try:
-            if not cosyvoice_loaded or cosyvoice_engine is None:
-                print("CosyVoice 모델이 로드되지 않았습니다. 로드 시도 중...")
-                load_cosyvoice_model()
-
-                if not cosyvoice_loaded:
-                    print(f"CosyVoice 로드 실패")
-                    return False
-
-            print(f"CosyVoice Zero-shot TTS 생성 중 (원본 방식)... (텍스트: {text[:30]}...)")
-            start_time = time.time()
-
-            # 원본 zero-shot 방식: prompt_text + prompt_wav를 매번 전달
-            # 이 방식이 정확한 음성 복제를 수행함
-            output_audio = None
-            for result in cosyvoice_engine.inference_zero_shot(
-                tts_text=text,
-                prompt_text=COSYVOICE_PROMPT_TEXT,  # 원본 프롬프트 텍스트
-                prompt_wav=cosyvoice_prompt_wav_path,  # 원본 프롬프트 오디오
-                stream=False,
-                speed=1.0,
-                text_frontend=False  # 한국어: 텍스트 전처리 비활성화 (숫자 영어 변환 방지)
-            ):
-                if output_audio is None:
-                    output_audio = result['tts_speech']
-                else:
-                    output_audio = torch.cat([output_audio, result['tts_speech']], dim=1)
-
+            mp3_data = b''.join(audio_chunks)
             elapsed = time.time() - start_time
-            if output_audio is not None:
-                speech_len = output_audio.shape[1] / cosyvoice_engine.sample_rate
-                rtf = elapsed / speech_len
-                print(f"CosyVoice TTS 생성 완료 (길이: {speech_len:.2f}초, RTF: {rtf:.3f})")
+            print(f"ElevenLabs 스트리밍 완료 (시간: {elapsed:.2f}초, 크기: {len(mp3_data)} bytes)")
 
-                # WAV로 저장 (soundfile 사용하여 torchcodec 의존성 회피)
-                import soundfile as sf
-                audio_numpy = output_audio.squeeze().cpu().numpy()
-                sf.write(str(output_path), audio_numpy, cosyvoice_engine.sample_rate)
+            # MP3를 메모리에서 디코딩
+            mp3_bytes = io.BytesIO(mp3_data)
+            audio_segment = AudioSegment.from_mp3(mp3_bytes)
 
-                # 16kHz로 리샘플링 (립싱크 호환)
-                temp_path = str(output_path).replace('.wav', '_temp.wav')
-                os.rename(str(output_path), temp_path)
-                subprocess.run(
-                    f'ffmpeg -y -i "{temp_path}" -ar 16000 "{output_path}"',
-                    shell=True, capture_output=True
-                )
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
+            # 16kHz로 리샘플링
+            audio_segment = audio_segment.set_frame_rate(16000)
+            audio_segment = audio_segment.set_channels(1)  # mono
 
-                print(f"CosyVoice TTS 완료: {output_path}")
-                return os.path.exists(output_path)
+            # numpy array로 변환
+            audio_numpy = np.array(audio_segment.get_array_of_samples(), dtype=np.float32)
+            audio_numpy = audio_numpy / 32768.0  # int16 -> float32
 
-            return False
+            # output_path가 제공되면 저장 (호환성)
+            if output_path:
+                sf.write(str(output_path), audio_numpy, 16000)
 
-        except Exception as e:
-            print(f"CosyVoice TTS 오류: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
+            print(f"ElevenLabs TTS 완료 (길이: {len(audio_numpy)/16000:.2f}초)")
+            return (audio_numpy, 16000)
+
+        print(f"ElevenLabs 오류: {response.status_code} - {response.text}")
+        return None
 
     print(f"[TTS] 알 수 없는 엔진: {engine}")
-    return False
+    return None
 
 
 @app.route('/api/generate', methods=['POST'])
@@ -708,22 +641,23 @@ def api_generate():
 
             start_time = client_sessions[sid]['start_time']
 
-            # 1. TTS 생성
+            # 1. TTS 생성 (메모리에서 직접 처리)
             engine_name = TTS_ENGINES.get(tts_engine, {}).get('name', tts_engine)
             socketio.emit('status', {'message': f'TTS 생성 중 ({engine_name})...', 'progress': 0, 'elapsed': 0}, to=sid)
-            tts_output = Path("assets/audio/tts_output.wav")
 
-            success = generate_tts_audio(text, tts_engine, tts_voice, tts_output)
+            tts_result = generate_tts_audio(text, tts_engine, tts_voice)
 
-            if not success:
+            if tts_result is None:
                 socketio.emit('error', {'message': f'TTS 생성 실패 ({engine_name})'}, to=sid)
                 return
+
+            audio_numpy, sample_rate = tts_result
 
             if sid in client_sessions and client_sessions[sid]['cancelled']:
                 socketio.emit('cancelled', {'message': '생성이 취소되었습니다'}, to=sid)
                 return
 
-            # 2. 립싱크 생성
+            # 2. 립싱크 생성 (파일 없이 numpy array 전달)
             socketio.emit('status', {
                 'message': '립싱크 생성 시작...',
                 'progress': 10,
@@ -732,7 +666,7 @@ def api_generate():
 
             output_video = lipsync_engine.generate_lipsync(
                 avatar_path,
-                str(tts_output),
+                (audio_numpy, sample_rate),  # numpy array 전달
                 output_dir="results/realtime"
             )
 
@@ -823,53 +757,81 @@ def api_chat():
         return jsonify({"error": "메시지가 필요합니다"}), 400
 
     try:
-        # OpenAI API 사용 (환경변수에서 키 가져오기)
+        # LLM API 설정
+        llm_api_url = os.getenv('LLM_API_URL', 'https://api.mindprep.co.kr/v1/chat/completions')
+        llm_model = os.getenv('LLM_MODEL', 'vllm-qwen3-30b-a3b')
         openai_api_key = os.getenv('OPENAI_API_KEY', '')
 
-        if openai_api_key:
-            import requests
+        import requests
 
-            # 대화 기록에 사용자 메시지 추가
-            conversation_history.append({"role": "user", "content": message})
+        # 대화 기록에 사용자 메시지 추가
+        conversation_history.append({"role": "user", "content": message})
 
-            # API 호출
+        messages_payload = [
+            {"role": "system", "content": current_system_prompt},
+            *conversation_history[-10:]  # 최근 10개 대화만 유지
+        ]
+
+        assistant_message = None
+        llm_source = None  # LLM 소스 추적
+
+        # 1차 시도: LLM API Server (api.mindprep.co.kr - 인증 불필요)
+        try:
             response = requests.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {openai_api_key}",
-                    "Content-Type": "application/json"
-                },
+                llm_api_url,
+                headers={"Content-Type": "application/json"},
                 json={
-                    "model": "gpt-4o-mini",
-                    "messages": [
-                        {"role": "system", "content": current_system_prompt},
-                        *conversation_history[-10:]  # 최근 10개 대화만 유지
-                    ],
+                    "model": llm_model,
+                    "messages": messages_payload,
                     "max_tokens": 200,
                     "temperature": 0.7
-                }
+                },
+                timeout=30
             )
 
             if response.status_code == 200:
                 result = response.json()
                 assistant_message = result['choices'][0]['message']['content']
-                conversation_history.append({"role": "assistant", "content": assistant_message})
-                return jsonify({"response": assistant_message})
+                llm_source = f"LLM API ({llm_model})"
+                print(f"LLM API Server 응답 성공")
             else:
-                return jsonify({"error": f"OpenAI API 오류: {response.status_code}"}), 500
+                print(f"LLM API Server 실패: {response.status_code}, OpenAI로 fallback")
+        except Exception as e:
+            print(f"LLM API Server 연결 실패: {e}, OpenAI로 fallback")
+
+        # 2차 시도: OpenAI API (fallback)
+        if assistant_message is None and openai_api_key:
+            try:
+                response = requests.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {openai_api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": "gpt-4o-mini",
+                        "messages": messages_payload,
+                        "max_tokens": 200,
+                        "temperature": 0.7
+                    },
+                    timeout=30
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    assistant_message = result['choices'][0]['message']['content']
+                    llm_source = "OpenAI (gpt-4o-mini)"
+                    print(f"OpenAI fallback 응답 성공")
+                else:
+                    print(f"OpenAI fallback 실패: {response.status_code}")
+            except Exception as e:
+                print(f"OpenAI fallback 연결 실패: {e}")
+
+        if assistant_message:
+            conversation_history.append({"role": "assistant", "content": assistant_message})
+            return jsonify({"response": assistant_message, "llm_source": llm_source})
         else:
-            # OpenAI 키가 없으면 간단한 응답
-            responses = [
-                f"'{message}'에 대해 더 자세히 설명해 주시겠어요?",
-                "좋은 답변입니다. 다른 경험도 있으신가요?",
-                "그 경험에서 무엇을 배우셨나요?",
-                "흥미로운 관점이네요. 구체적인 예시를 들어주실 수 있나요?"
-            ]
-            import random
-            response = random.choice(responses)
-            conversation_history.append({"role": "user", "content": message})
-            conversation_history.append({"role": "assistant", "content": response})
-            return jsonify({"response": response})
+            return jsonify({"error": "LLM API 및 OpenAI fallback 모두 실패"}), 500
 
     except Exception as e:
         import traceback
@@ -897,8 +859,8 @@ def api_v2_tts():
     Request:
         {
             "text": "합성할 텍스트",
-            "engine": "cosyvoice",  // optional, default: cosyvoice
-            "voice": "zero-shot"    // optional
+            "engine": "elevenlabs",  // optional, default: elevenlabs
+            "voice": "Custom"    // optional
         }
 
     Response:
@@ -922,15 +884,13 @@ def api_v2_tts():
         start_time = time.time()
         output_path = Path("assets/audio/tts_api_output.wav")
 
-        success = generate_tts_audio(text, engine, voice, output_path)
+        # 메모리에서 생성 후 파일로 저장 (테스트 API용)
+        tts_result = generate_tts_audio(text, engine, voice, output_path)
 
-        if success:
-            # 오디오 길이 계산
-            import wave
-            with wave.open(str(output_path), 'rb') as wf:
-                frames = wf.getnframes()
-                rate = wf.getframerate()
-                duration = frames / float(rate)
+        if tts_result:
+            audio_numpy, sample_rate = tts_result
+            # 오디오 길이 계산 (메모리에서)
+            duration = len(audio_numpy) / float(sample_rate)
 
             elapsed = time.time() - start_time
             return jsonify({
@@ -959,8 +919,8 @@ def api_v2_lipsync():
             "text": "합성할 텍스트",
             "avatar": "avatar_name",      // precomputed 폴더의 아바타 이름
             "avatar_path": "path.pkl",    // 또는 직접 경로 지정
-            "tts_engine": "cosyvoice",    // optional
-            "tts_voice": "zero-shot"      // optional
+            "tts_engine": "elevenlabs",    // optional
+            "tts_voice": "Custom"      // optional
         }
 
     Response:
@@ -1041,8 +1001,8 @@ def api_v2_chat_and_lipsync():
             "message": "사용자 메시지",
             "avatar": "avatar_name",
             "avatar_path": "path.pkl",    // 또는 직접 경로
-            "tts_engine": "cosyvoice",
-            "tts_voice": "zero-shot"
+            "tts_engine": "elevenlabs",
+            "tts_voice": "Custom"
         }
 
     Response:
@@ -1082,47 +1042,75 @@ def api_v2_chat_and_lipsync():
     try:
         start_time = time.time()
 
-        # 1. LLM 응답 생성
+        # 1. LLM 응답 생성 (LLM API Server -> OpenAI fallback)
+        llm_api_url = os.getenv('LLM_API_URL', 'https://api.mindprep.co.kr/v1/chat/completions')
+        llm_model = os.getenv('LLM_MODEL', 'vllm-qwen3-30b-a3b')
         openai_api_key = os.getenv('OPENAI_API_KEY', '')
 
-        if openai_api_key:
-            import requests as req
-            conversation_history.append({"role": "user", "content": message})
+        import requests as req
+        conversation_history.append({"role": "user", "content": message})
 
+        messages_payload = [
+            {"role": "system", "content": current_system_prompt},
+            *conversation_history[-10:]
+        ]
+
+        llm_response = None
+
+        # 1차 시도: LLM API Server
+        try:
             response = req.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {openai_api_key}",
-                    "Content-Type": "application/json"
-                },
+                llm_api_url,
+                headers={"Content-Type": "application/json"},
                 json={
-                    "model": "gpt-4o-mini",
-                    "messages": [
-                        {"role": "system", "content": current_system_prompt},
-                        *conversation_history[-10:]
-                    ],
+                    "model": llm_model,
+                    "messages": messages_payload,
                     "max_tokens": 200,
                     "temperature": 0.7
-                }
+                },
+                timeout=30
             )
 
             if response.status_code == 200:
                 result = response.json()
                 llm_response = result['choices'][0]['message']['content']
-                conversation_history.append({"role": "assistant", "content": llm_response})
+                print(f"LLM API Server 응답 성공")
             else:
-                return jsonify({"success": False, "error": f"OpenAI API 오류: {response.status_code}"}), 500
-        else:
-            # OpenAI 키가 없으면 간단한 응답
-            import random
-            responses = [
-                f"'{message}'에 대해 더 자세히 설명해 주시겠어요?",
-                "좋은 답변입니다. 다른 경험도 있으신가요?",
-                "그 경험에서 무엇을 배우셨나요?",
-            ]
-            llm_response = random.choice(responses)
-            conversation_history.append({"role": "user", "content": message})
-            conversation_history.append({"role": "assistant", "content": llm_response})
+                print(f"LLM API Server 실패: {response.status_code}, OpenAI로 fallback")
+        except Exception as e:
+            print(f"LLM API Server 연결 실패: {e}, OpenAI로 fallback")
+
+        # 2차 시도: OpenAI API (fallback)
+        if llm_response is None and openai_api_key:
+            try:
+                response = req.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {openai_api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": "gpt-4o-mini",
+                        "messages": messages_payload,
+                        "max_tokens": 200,
+                        "temperature": 0.7
+                    },
+                    timeout=30
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    llm_response = result['choices'][0]['message']['content']
+                    print(f"OpenAI fallback 응답 성공")
+                else:
+                    print(f"OpenAI fallback 실패: {response.status_code}")
+            except Exception as e:
+                print(f"OpenAI fallback 연결 실패: {e}")
+
+        if llm_response is None:
+            return jsonify({"success": False, "error": "LLM API 및 OpenAI fallback 모두 실패"}), 500
+
+        conversation_history.append({"role": "assistant", "content": llm_response})
 
         # 2. TTS 생성
         tts_output = Path("assets/audio/tts_output.wav")
@@ -1174,26 +1162,18 @@ def api_v2_status():
         {
             "status": "ok",
             "models_loaded": true,
-            "cosyvoice_loaded": true,
             "available_avatars": ["avatar1", "avatar2"],
-            "tts_engines": ["cosyvoice", "elevenlabs"]
+            "tts_engines": ["elevenlabs"]
         }
     """
     avatars = get_available_avatars()
     avatar_names = [a['id'] for a in avatars]
 
-    available_engines = []
-    for engine_id, engine_info in TTS_ENGINES.items():
-        if engine_id == 'cosyvoice':
-            if os.path.exists(COSYVOICE_MODEL_PATH):
-                available_engines.append(engine_id)
-        else:
-            available_engines.append(engine_id)
+    available_engines = list(TTS_ENGINES.keys())
 
     return jsonify({
         "status": "ok",
         "models_loaded": models_loaded,
-        "cosyvoice_loaded": cosyvoice_loaded,
         "available_avatars": avatar_names,
         "tts_engines": available_engines
     })
@@ -1241,22 +1221,23 @@ def api_generate_streaming():
 
             start_time = client_sessions[sid]['start_time']
 
-            # 1. TTS 생성
+            # 1. TTS 생성 (메모리에서 직접 처리)
             engine_name = TTS_ENGINES.get(tts_engine, {}).get('name', tts_engine)
             socketio.emit('status', {'message': f'TTS 생성 중 ({engine_name})...', 'progress': 0, 'elapsed': 0}, to=sid)
-            tts_output = Path("assets/audio/tts_output.wav")
 
-            success = generate_tts_audio(text, tts_engine, tts_voice, tts_output)
+            tts_result = generate_tts_audio(text, tts_engine, tts_voice)
 
-            if not success:
+            if tts_result is None:
                 socketio.emit('error', {'message': f'TTS 생성 실패 ({engine_name})'}, to=sid)
                 return
+
+            audio_numpy, sample_rate = tts_result
 
             if sid in client_sessions and client_sessions[sid]['cancelled']:
                 socketio.emit('cancelled', {'message': '생성이 취소되었습니다'}, to=sid)
                 return
 
-            # 2. 립싱크 생성
+            # 2. 립싱크 생성 (파일 없이 numpy array 전달)
             socketio.emit('status', {
                 'message': '립싱크 생성 시작...',
                 'progress': 10,
@@ -1265,7 +1246,7 @@ def api_generate_streaming():
 
             output_video = lipsync_engine.generate_lipsync(
                 avatar_path,
-                str(tts_output),
+                (audio_numpy, sample_rate),  # numpy array 전달
                 output_dir="results/realtime"
             )
 
@@ -1394,12 +1375,6 @@ if __name__ == '__main__':
     lipsync_engine = LipsyncEngine()
     lipsync_engine.load_models(use_float16=True)
     models_loaded = True
-
-    # CosyVoice 모델 프리로드
-    print("\n" + "=" * 50)
-    print("CosyVoice 모델 프리로드 시작...")
-    print("=" * 50)
-    load_cosyvoice_model()
 
     print("\n프리로드 완료!")
 
