@@ -26,6 +26,7 @@ import threading
 import subprocess
 import signal
 import pickle
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import cv2
 import numpy as np
 from pathlib import Path
@@ -312,7 +313,7 @@ class LipsyncEngine:
         self.loaded = True
         return True
 
-    def generate_lipsync(self, precomputed_path, audio_input, output_dir="results/realtime", fps=25, sid=None):
+    def generate_lipsync(self, precomputed_path, audio_input, output_dir="results/realtime", fps=25, sid=None, preloaded_data=None):
         """
         프리컴퓨트된 아바타로 립싱크 생성 (배치 처리 + 공식 MuseTalk 블렌딩)
 
@@ -322,6 +323,7 @@ class LipsyncEngine:
             output_dir: 출력 디렉토리
             fps: FPS (프리컴퓨트 데이터에서 자동 가져옴)
             sid: WebSocket 세션 ID (진행률 업데이트용)
+            preloaded_data: 미리 로드된 프리컴퓨트 데이터 (병렬 처리용)
         """
         import torch
         import copy
@@ -336,47 +338,55 @@ class LipsyncEngine:
         timings = {}  # 상세 타이밍 기록
         batch_size = 32  # 배치 크기 증가 (GPU 활용도 향상)
 
-        # 프리컴퓨트 데이터 로드
+        # 프리컴퓨트 데이터 로드 (미리 로드된 데이터가 있으면 사용)
         t0 = time.time()
-        print(f"프리컴퓨트 데이터 로드 중: {precomputed_path}")
-        if sid:
-            emit_kwargs = {
-                'message': '프리컴퓨트 데이터 로드 중...',
-                'progress': 11,
-                'elapsed': time.time() - start_time
-            }
-            socketio.emit('status', emit_kwargs, to=sid)
-        
-        try:
-            with open(precomputed_path, 'rb') as f:
-                precomputed = pickle.load(f)
-        except FileNotFoundError:
-            error_msg = f"프리컴퓨트 파일을 찾을 수 없습니다: {precomputed_path}"
-            print(f"[ERROR] {error_msg}")
-            raise FileNotFoundError(error_msg)
-        except Exception as e:
-            error_msg = f"프리컴퓨트 데이터 로드 실패: {e}"
-            print(f"[ERROR] {error_msg}")
-            import traceback
-            traceback.print_exc()
-            raise
+        if preloaded_data:
+            print(f"프리컴퓨트 데이터 사용 (미리 로드됨): {precomputed_path}")
+            coords_list = preloaded_data['coords_list']
+            frames_list = preloaded_data['frames_list']
+            input_latent_list = preloaded_data['input_latent_list']
+            fps = preloaded_data['fps']
+            timings['precompute_load'] = 0.0  # 이미 로드됨
+        else:
+            print(f"프리컴퓨트 데이터 로드 중: {precomputed_path}")
+            if sid:
+                emit_kwargs = {
+                    'message': '프리컴퓨트 데이터 로드 중...',
+                    'progress': 11,
+                    'elapsed': time.time() - start_time
+                }
+                socketio.emit('status', emit_kwargs, to=sid)
 
-        # 프리컴퓨트 데이터 키 매핑 (새 형식 지원)
-        coords_list = precomputed.get('coords_list', precomputed.get('coord_list_cycle'))
-        frames_list = precomputed.get('frames', precomputed.get('frame_list_cycle'))
-        input_latent_list = precomputed.get('input_latent_list', precomputed.get('input_latent_list_cycle'))
-        
-        # 필수 데이터 확인
-        if not coords_list or not frames_list or not input_latent_list:
-            error_msg = "프리컴퓨트 데이터에 필수 키가 없습니다. coords_list, frames, input_latent_list가 필요합니다."
-            print(f"[ERROR] {error_msg}")
-            raise ValueError(error_msg)
+            try:
+                with open(precomputed_path, 'rb') as f:
+                    precomputed = pickle.load(f)
+            except FileNotFoundError:
+                error_msg = f"프리컴퓨트 파일을 찾을 수 없습니다: {precomputed_path}"
+                print(f"[ERROR] {error_msg}")
+                raise FileNotFoundError(error_msg)
+            except Exception as e:
+                error_msg = f"프리컴퓨트 데이터 로드 실패: {e}"
+                print(f"[ERROR] {error_msg}")
+                import traceback
+                traceback.print_exc()
+                raise
 
-        # FPS 가져오기
-        fps = precomputed.get('fps', 25)
+            # 프리컴퓨트 데이터 키 매핑 (새 형식 지원)
+            coords_list = precomputed.get('coords_list', precomputed.get('coord_list_cycle'))
+            frames_list = precomputed.get('frames', precomputed.get('frame_list_cycle'))
+            input_latent_list = precomputed.get('input_latent_list', precomputed.get('input_latent_list_cycle'))
+
+            # 필수 데이터 확인
+            if not coords_list or not frames_list or not input_latent_list:
+                error_msg = "프리컴퓨트 데이터에 필수 키가 없습니다. coords_list, frames, input_latent_list가 필요합니다."
+                print(f"[ERROR] {error_msg}")
+                raise ValueError(error_msg)
+
+            # FPS 가져오기
+            fps = precomputed.get('fps', 25)
+            timings['precompute_load'] = time.time() - t0
+
         extra_margin = 10  # V1.5 bbox 하단 확장
-
-        timings['precompute_load'] = time.time() - t0
 
         # 오디오 처리 (파일 경로 또는 numpy array)
         t0 = time.time()
@@ -797,6 +807,24 @@ def api_tts_engines():
             'available': True
         })
     return jsonify(engines)
+
+
+def load_precomputed_data(precomputed_path):
+    """프리컴퓨트 데이터 로드 (병렬화용)"""
+    with open(precomputed_path, 'rb') as f:
+        precomputed = pickle.load(f)
+
+    coords_list = precomputed.get('coords_list', precomputed.get('coord_list_cycle'))
+    frames_list = precomputed.get('frames', precomputed.get('frame_list_cycle'))
+    input_latent_list = precomputed.get('input_latent_list', precomputed.get('input_latent_list_cycle'))
+    fps = precomputed.get('fps', 25)
+
+    return {
+        'coords_list': coords_list,
+        'frames_list': frames_list,
+        'input_latent_list': input_latent_list,
+        'fps': fps
+    }
 
 
 def get_elevenlabs_voice_id(voice_name):
@@ -1260,18 +1288,38 @@ def api_v2_lipsync():
     try:
         start_time = time.time()
 
-        # 1. TTS 생성
+        # 병렬 처리: TTS 생성과 프리컴퓨트 로드를 동시에
         tts_output = Path("assets/audio/tts_output.wav")
-        tts_success = generate_tts_audio(text, tts_engine, tts_voice, tts_output)
+        tts_result = None
+        precomputed_data = None
 
-        if not tts_success:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            # TTS와 프리컴퓨트 로드를 병렬로 실행
+            tts_future = executor.submit(generate_tts_audio, text, tts_engine, tts_voice, tts_output)
+            precompute_future = executor.submit(load_precomputed_data, avatar_path)
+
+            # 결과 수집
+            for future in as_completed([tts_future, precompute_future]):
+                if future == tts_future:
+                    tts_result = future.result()
+                else:
+                    precomputed_data = future.result()
+
+        parallel_time = time.time() - start_time
+        print(f"[병렬 처리] TTS + 프리컴퓨트 로드 완료: {parallel_time:.2f}초")
+
+        if not tts_result:
             return jsonify({"success": False, "error": "TTS 생성 실패"}), 500
 
-        # 2. 립싱크 생성
+        if not precomputed_data:
+            return jsonify({"success": False, "error": "프리컴퓨트 로드 실패"}), 500
+
+        # 립싱크 생성 (프리컴퓨트 데이터 전달)
         output_video = lipsync_engine.generate_lipsync(
             avatar_path,
             str(tts_output),
-            output_dir="results/realtime"
+            output_dir="results/realtime",
+            preloaded_data=precomputed_data  # 미리 로드된 데이터 전달
         )
 
         if output_video:
