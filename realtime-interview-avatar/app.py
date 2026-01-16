@@ -498,7 +498,7 @@ class LipsyncEngine:
             traceback.print_exc()
             raise
 
-        all_pred_latents = []  # UNet 추론 결과 수집 (VAE 배치 디코딩용)
+        inference_frame_list = []  # 추론된 프레임들 (스킵된 경우 일부만)
         total_batches = int(np.ceil(float(actual_inference_frames) / batch_size))
 
         # CUDA 최적화: inference_mode 사용 (더 빠름)
@@ -524,12 +524,13 @@ class LipsyncEngine:
                         encoder_hidden_states=audio_feature_batch
                     ).sample
 
-                # latents 수집 (VAE 디코딩은 나중에 더 큰 배치로)
-                all_pred_latents.append(pred_latents)
+                # 배치 VAE 디코딩
+                recon_frames = self.vae.decode_latents(pred_latents)
+                inference_frame_list.extend(recon_frames)  # extend 사용 (더 빠름)
 
                 # 진행률 전송 (주기적으로 - 매 5배치마다 또는 마지막 배치)
                 if (batch_idx + 1) % 5 == 0 or (batch_idx + 1) == total_batches:
-                    progress = 10 + int((batch_idx + 1) / total_batches * 50)  # 10~60%
+                    progress = 10 + int((batch_idx + 1) / total_batches * 60)  # 10~70%
                     elapsed = time.time() - start_time
                     emit_kwargs = {
                         'message': f'UNet 추론 중 ({engine_name})... {min((batch_idx+1)*batch_size, actual_inference_frames)}/{actual_inference_frames}',
@@ -546,46 +547,6 @@ class LipsyncEngine:
                     print(f"  [{batch_idx+1}/{total_batches}] 배치 처리 중... ({int((batch_idx+1)/total_batches*100)}%)")
 
         timings['unet_inference'] = time.time() - t0
-
-        # VAE 디코딩 배치화: 모든 latents를 큰 배치로 디코딩
-        t0_vae = time.time()
-        print(f"VAE 디코딩 시작 (총 {actual_inference_frames}프레임)...")
-        if sid:
-            emit_kwargs = {
-                'message': f'VAE 디코딩 중... (0/{actual_inference_frames})',
-                'progress': 62,
-                'elapsed': time.time() - start_time
-            }
-            socketio.emit('status', emit_kwargs, to=sid)
-
-        # 모든 latents 합치기
-        all_latents = torch.cat(all_pred_latents, dim=0)
-        del all_pred_latents  # 메모리 해제
-
-        # VAE 디코딩 배치 크기 (메모리와 속도 균형 - VAE는 더 큰 배치 가능)
-        vae_batch_size = 64
-        inference_frame_list = []
-
-        with torch.inference_mode():
-            for i in range(0, all_latents.shape[0], vae_batch_size):
-                batch_latents = all_latents[i:i+vae_batch_size]
-                recon_frames = self.vae.decode_latents(batch_latents)
-                inference_frame_list.extend(recon_frames)
-
-                # 진행률 업데이트
-                decoded_count = min(i + vae_batch_size, all_latents.shape[0])
-                if sid and (decoded_count % 32 == 0 or decoded_count == all_latents.shape[0]):
-                    progress = 62 + int(decoded_count / all_latents.shape[0] * 8)  # 62~70%
-                    emit_kwargs = {
-                        'message': f'VAE 디코딩 중... ({decoded_count}/{actual_inference_frames})',
-                        'progress': progress,
-                        'elapsed': time.time() - start_time
-                    }
-                    socketio.emit('status', emit_kwargs, to=sid)
-
-        del all_latents  # 메모리 해제
-        timings['vae_decode'] = time.time() - t0_vae
-        print(f"  VAE 디코딩 완료: {timings['vae_decode']:.2f}초")
 
         # 프레임 보간 (스킵된 프레임 복원)
         if frame_skip > 1:
