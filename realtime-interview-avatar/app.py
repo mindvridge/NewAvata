@@ -713,7 +713,10 @@ class LipsyncEngine:
             '-i', temp_video,
             '-i', audio_file_path,
             '-c:v', 'h264_nvenc',  # NVIDIA GPU 인코더
-            '-preset', 'p4',       # 빠른 프리셋
+            '-preset', 'p1',       # 가장 빠른 프리셋 (p1=fastest, p7=slowest)
+            '-tune', 'ull',        # Ultra Low Latency 튜닝
+            '-rc', 'vbr',          # 가변 비트레이트
+            '-cq', '28',           # 품질 수준 (낮을수록 고품질)
             '-c:a', 'aac',
             '-shortest',
             final_video
@@ -984,6 +987,11 @@ TTS_ENGINES = {
         'name': 'ElevenLabs',
         'voices': ['Custom'],
         'default': True
+    },
+    'edge': {
+        'name': 'Edge TTS (무료)',
+        'voices': ['ko-KR-SunHiNeural'],
+        'default': False
     }
 }
 
@@ -1183,6 +1191,66 @@ def generate_tts_audio(text, engine, voice, output_path=None):
 
         print(f"ElevenLabs 오류: {response.status_code} - {response.text}")
         return None
+
+    elif engine == 'edge':
+        # Microsoft Edge TTS (무료)
+        try:
+            import edge_tts
+            import asyncio
+            import io
+            import soundfile as sf
+            from pydub import AudioSegment
+
+            start_time = time.time()
+
+            # 음성 선택
+            voice_name = voice if voice else 'ko-KR-SunHiNeural'
+
+            async def generate_edge_tts():
+                communicate = edge_tts.Communicate(text, voice_name)
+                audio_data = b''
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        audio_data += chunk["data"]
+                return audio_data
+
+            # 이벤트 루프 실행
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+            mp3_data = loop.run_until_complete(generate_edge_tts())
+
+            # MP3를 AudioSegment로 변환
+            mp3_buffer = io.BytesIO(mp3_data)
+            audio_segment = AudioSegment.from_mp3(mp3_buffer)
+
+            # 16kHz mono로 변환
+            audio_segment = audio_segment.set_frame_rate(16000)
+            audio_segment = audio_segment.set_channels(1)
+
+            # numpy array로 변환
+            audio_numpy = np.array(audio_segment.get_array_of_samples(), dtype=np.float32)
+            audio_numpy = audio_numpy / 32768.0
+
+            elapsed = time.time() - start_time
+            print(f"Edge TTS 완료 (시간: {elapsed:.2f}초, 길이: {len(audio_numpy)/16000:.2f}초)")
+
+            if output_path:
+                sf.write(str(output_path), audio_numpy, 16000)
+
+            return (audio_numpy, 16000)
+
+        except ImportError:
+            print("[TTS] edge-tts가 설치되지 않았습니다. pip install edge-tts")
+            return None
+        except Exception as e:
+            print(f"[TTS] Edge TTS 오류: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
     print(f"[TTS] 알 수 없는 엔진: {engine}")
     return None
