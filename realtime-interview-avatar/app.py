@@ -43,7 +43,7 @@ MUSETALK_PATH = Path(os.getenv('MUSETALK_PATH', 'c:/NewAvata/NewAvata/MuseTalk')
 sys.path.insert(0, str(MUSETALK_PATH))
 
 # 공식 MuseTalk 블렌딩 모듈
-from musetalk.utils.blending import get_image
+from musetalk.utils.blending import get_image, get_image_blending, get_image_prepare_material
 from musetalk.utils.face_parsing import FaceParsing
 
 # 전역 FaceParsing 인스턴스
@@ -584,16 +584,38 @@ class LipsyncEngine:
         # GPU 메모리 정리
         torch.cuda.empty_cache()
 
-        # 블렌딩 (병렬 처리)
+        # 블렌딩 (GPU 최적화 - 마스크 프리컴퓨트)
         t0 = time.time()
-        print("블렌딩 시작 (병렬 처리)...")
+        print("블렌딩 시작 (GPU 최적화)...")
 
         # 페이드 인/아웃 프레임 수 (약 0.3초)
         fade_frames = min(8, len(res_frame_list) // 4)
         total_frames = len(res_frame_list)
 
-        def blend_single_frame(args):
-            """단일 프레임 블렌딩 함수 (병렬 처리용) - 선명도 최적화"""
+        # 마스크/crop_box 프리컴퓨트 (첫 프레임에서 1회만 계산 후 재사용)
+        # 아바타 프레임은 동일한 얼굴 위치이므로 마스크 1개로 충분
+        mask_cache = precomputed.get('mask_cache', None)
+        crop_box_cache = precomputed.get('crop_box_cache', None)
+
+        if mask_cache is None or crop_box_cache is None:
+            print("  마스크 프리컴퓨트 중 (첫 실행시만)...")
+            t_mask = time.time()
+            # 첫 프레임에서만 마스크 계산 (모든 프레임 동일 위치)
+            coord = coords_list[0]
+            frame = frames_list[0]
+            x1, y1, x2, y2 = [int(c) for c in coord]
+            mask_cache, crop_box_cache = get_image_prepare_material(
+                frame, [x1, y1, x2, y2],
+                upper_boundary_ratio=0.5, expand=1.5,
+                fp=face_parsing, mode="jaw"
+            )
+            # 캐시에 저장
+            precomputed['mask_cache'] = mask_cache
+            precomputed['crop_box_cache'] = crop_box_cache
+            print(f"  마스크 프리컴퓨트 완료: {time.time() - t_mask:.2f}초")
+
+        def blend_single_frame_fast(args):
+            """단일 프레임 블렌딩 함수 (마스크 재사용 - GPU 최적화)"""
             i, res_frame = args
             idx = i % len(coords_list)
             coord = coords_list[idx]
@@ -602,7 +624,7 @@ class LipsyncEngine:
             x1, y1, x2, y2 = [int(c) for c in coord]
 
             try:
-                # 선명화 + 고품질 리사이즈 버전
+                # 선명화 + 고품질 리사이즈
                 res_frame_uint8 = res_frame.astype(np.uint8)
 
                 # 언샤프 마스크 (Unsharp Mask) - 선명화
@@ -618,14 +640,25 @@ class LipsyncEngine:
             except Exception as e:
                 return (i, original_frame)
 
-            # 공식 get_image 블렌딩 (V1.5 jaw 모드)
-            result_frame = get_image(
-                original_frame,
-                pred_frame_resized,
-                [x1, y1, x2, y2],
-                mode="jaw",
-                fp=face_parsing
-            )
+            # 캐시된 마스크 사용 (face_seg 재호출 없음 - 모든 프레임 동일 마스크)
+            if mask_cache is not None and crop_box_cache is not None:
+                # 빠른 블렌딩 (마스크 재계산 없음)
+                result_frame = get_image_blending(
+                    original_frame,
+                    pred_frame_resized,
+                    [x1, y1, x2, y2],
+                    mask_cache,
+                    crop_box_cache
+                )
+            else:
+                # 폴백: 기존 방식
+                result_frame = get_image(
+                    original_frame,
+                    pred_frame_resized,
+                    [x1, y1, x2, y2],
+                    mode="jaw",
+                    fp=face_parsing
+                )
 
             # 페이드 인/아웃 적용
             if i < fade_frames:
@@ -650,7 +683,7 @@ class LipsyncEngine:
         generated_frames = [None] * total_frames
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             results = list(tqdm(
-                executor.map(blend_single_frame, enumerate(res_frame_list)),
+                executor.map(blend_single_frame_fast, enumerate(res_frame_list)),
                 total=total_frames,
                 desc="블렌딩"
             ))
