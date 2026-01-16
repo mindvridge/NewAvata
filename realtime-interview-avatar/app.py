@@ -313,7 +313,7 @@ class LipsyncEngine:
         self.loaded = True
         return True
 
-    def generate_lipsync(self, precomputed_path, audio_input, output_dir="results/realtime", fps=25, sid=None, preloaded_data=None, frame_skip=1):
+    def generate_lipsync(self, precomputed_path, audio_input, output_dir="results/realtime", fps=25, sid=None, preloaded_data=None, frame_skip=1, resolution="720p"):
         """
         프리컴퓨트된 아바타로 립싱크 생성 (배치 처리 + 공식 MuseTalk 블렌딩)
 
@@ -325,6 +325,7 @@ class LipsyncEngine:
             sid: WebSocket 세션 ID (진행률 업데이트용)
             preloaded_data: 미리 로드된 프리컴퓨트 데이터 (병렬 처리용)
             frame_skip: 프레임 스킵 간격 (1=스킵없음, 2=2프레임당1추론, 3=3프레임당1추론)
+            resolution: 출력 해상도 ("720p", "480p", "360p")
         """
         import torch
         import copy
@@ -707,11 +708,29 @@ class LipsyncEngine:
         else:
             audio_file_path = audio_input
 
+        # 해상도 스케일 필터 설정
+        scale_filters = {
+            "720p": None,  # 원본 유지
+            "480p": "scale=854:480",
+            "360p": "scale=640:360"
+        }
+        scale_filter = scale_filters.get(resolution)
+
+        if scale_filter:
+            print(f"  해상도 스케일링: {resolution}")
+
         # GPU 인코딩 시도 (NVENC), 실패시 CPU 인코딩
-        nvenc_result = subprocess.run([
+        ffmpeg_cmd = [
             'ffmpeg', '-y',
             '-i', temp_video,
             '-i', audio_file_path,
+        ]
+
+        # 스케일 필터 추가
+        if scale_filter:
+            ffmpeg_cmd.extend(['-vf', scale_filter])
+
+        ffmpeg_cmd.extend([
             '-c:v', 'h264_nvenc',  # NVIDIA GPU 인코더
             '-preset', 'p1',       # 가장 빠른 프리셋 (p1=fastest, p7=slowest)
             '-tune', 'ull',        # Ultra Low Latency 튜닝
@@ -720,21 +739,28 @@ class LipsyncEngine:
             '-c:a', 'aac',
             '-shortest',
             final_video
-        ], capture_output=True)
+        ])
+
+        nvenc_result = subprocess.run(ffmpeg_cmd, capture_output=True)
 
         # NVENC 실패시 CPU 인코딩으로 폴백
         if nvenc_result.returncode != 0:
             print("  NVENC 실패, CPU 인코딩 사용")
-            subprocess.run([
+            ffmpeg_cmd_cpu = [
                 'ffmpeg', '-y',
                 '-i', temp_video,
                 '-i', audio_file_path,
+            ]
+            if scale_filter:
+                ffmpeg_cmd_cpu.extend(['-vf', scale_filter])
+            ffmpeg_cmd_cpu.extend([
                 '-c:v', 'libx264',
                 '-preset', 'ultrafast',  # 가장 빠른 CPU 프리셋
                 '-c:a', 'aac',
                 '-shortest',
                 final_video
-            ], capture_output=True)
+            ])
+            subprocess.run(ffmpeg_cmd_cpu, capture_output=True)
         else:
             print("  NVENC GPU 인코딩 사용")
 
@@ -1214,14 +1240,12 @@ def generate_tts_audio(text, engine, voice, output_path=None):
                         audio_data += chunk["data"]
                 return audio_data
 
-            # 이벤트 루프 실행
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+            # 새 이벤트 루프에서 실행 (스레드 안전)
+            mp3_data = asyncio.run(generate_edge_tts())
 
-            mp3_data = loop.run_until_complete(generate_edge_tts())
+            if not mp3_data:
+                print("[TTS] Edge TTS: 오디오 데이터가 비어있습니다")
+                return None
 
             # MP3를 AudioSegment로 변환
             mp3_buffer = io.BytesIO(mp3_data)
@@ -1243,8 +1267,8 @@ def generate_tts_audio(text, engine, voice, output_path=None):
 
             return (audio_numpy, 16000)
 
-        except ImportError:
-            print("[TTS] edge-tts가 설치되지 않았습니다. pip install edge-tts")
+        except ImportError as e:
+            print(f"[TTS] edge-tts가 설치되지 않았습니다. pip install edge-tts: {e}")
             return None
         except Exception as e:
             print(f"[TTS] Edge TTS 오류: {e}")
@@ -1268,6 +1292,7 @@ def api_generate():
     tts_voice = data.get('tts_voice', DEFAULT_TTS_VOICE)
     client_sid = data.get('sid')  # 클라이언트 SID
     frame_skip = data.get('frame_skip', 1)  # 프레임 스킵 (1=없음, 2=절반추론, 3=1/3추론)
+    resolution = data.get('resolution', '720p')  # 출력 해상도 (720p, 480p, 360p)
 
     if not avatar_path:
         return jsonify({"error": "avatar_path가 필요합니다"}), 400
@@ -1331,7 +1356,8 @@ def api_generate():
                 (audio_numpy, sample_rate),  # numpy array 전달
                 output_dir="results/realtime",
                 sid=sid,  # WebSocket 세션 ID 전달
-                frame_skip=frame_skip  # 프레임 스킵 적용
+                frame_skip=frame_skip,  # 프레임 스킵 적용
+                resolution=resolution  # 출력 해상도
             )
 
             if sid in client_sessions and client_sessions[sid]['cancelled']:

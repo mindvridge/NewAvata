@@ -473,6 +473,15 @@
                             <option value="">엔진 선택</option>
                         </select>
                     </div>
+
+                    <div class="form-group">
+                        <label>출력 해상도</label>
+                        <select id="resolutionSelect">
+                            <option value="720p">720p (고품질)</option>
+                            <option value="480p" selected>480p (빠른 속도)</option>
+                            <option value="360p">360p (최고 속도)</option>
+                        </select>
+                    </div>
                 </div>
 
                 <div class="chat-container">
@@ -563,7 +572,7 @@
         let llmStartTime = null;
         let isVideoPlaying = false;  // 비디오 재생 중 플래그
         let isStreaming = false;  // 스트리밍 모드 플래그
-        let streamingMode = true;  // true: 스트리밍 모드, false: 기존 모드
+        let streamingMode = false;  // true: 스트리밍 모드, false: 기존 모드 (스트리밍 비활성화)
         let streamCtx = null;  // Canvas context
         let streamFps = 25;  // 스트리밍 FPS
         let clientSid = null;  // 클라이언트 세션 ID
@@ -954,6 +963,7 @@
                 // 2. 립싱크 생성
                 const ttsEngine = document.getElementById('ttsEngineSelect').value;
                 const ttsVoice = document.getElementById('ttsVoiceSelect').value;
+                const resolution = document.getElementById('resolutionSelect').value;
 
                 if (streamingMode) {
                     // 스트리밍 상태 초기화
@@ -968,7 +978,8 @@
                             tts_engine: ttsEngine,
                             tts_voice: ttsVoice,
                             sid: clientSid,
-                            frame_skip: 2  // 스트리밍 최적화
+                            frame_skip: 2,  // 스트리밍 최적화
+                            resolution: resolution
                         })
                     });
                 } else {
@@ -982,7 +993,8 @@
                             text: chatData.response,
                             tts_engine: ttsEngine,
                             tts_voice: ttsVoice,
-                            sid: clientSid
+                            sid: clientSid,
+                            resolution: resolution
                         })
                     });
                 }
@@ -1054,6 +1066,7 @@
                 // 립싱크 생성
                 const ttsEngine = document.getElementById('ttsEngineSelect').value;
                 const ttsVoice = document.getElementById('ttsVoiceSelect').value;
+                const resolution = document.getElementById('resolutionSelect').value;
 
                 if (streamingMode) {
                     // 스트리밍 상태 초기화
@@ -1068,7 +1081,8 @@
                             tts_engine: ttsEngine,
                             tts_voice: ttsVoice,
                             sid: clientSid,
-                            frame_skip: 2  // 스트리밍 최적화
+                            frame_skip: 2,  // 스트리밍 최적화
+                            resolution: resolution
                         })
                     });
                 } else {
@@ -1082,7 +1096,8 @@
                             text: chatData.response,
                             tts_engine: ttsEngine,
                             tts_voice: ttsVoice,
-                            sid: clientSid
+                            sid: clientSid,
+                            resolution: resolution
                         })
                     });
                 }
