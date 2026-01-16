@@ -760,6 +760,223 @@ class LipsyncEngine:
 
         return final_video
 
+    def generate_lipsync_streaming(self, precomputed_path, audio_input, sid, emit_callback, preloaded_data=None, frame_skip=1):
+        """
+        스트리밍 립싱크 생성 - 프레임 생성 즉시 WebSocket으로 전송
+
+        Args:
+            precomputed_path: 프리컴퓨트 데이터 경로
+            audio_input: 오디오 파일 경로 또는 (audio_numpy, sample_rate) 튜플
+            sid: WebSocket 세션 ID
+            emit_callback: WebSocket emit 함수
+            preloaded_data: 미리 로드된 프리컴퓨트 데이터
+            frame_skip: 프레임 스킵 간격
+        """
+        import torch
+        import base64
+        from musetalk.utils.utils import datagen
+        global face_parsing
+
+        if not self.loaded:
+            raise RuntimeError("모델이 로드되지 않았습니다")
+
+        start_time = time.time()
+        batch_size = 8  # 스트리밍용 작은 배치
+
+        # 프리컴퓨트 데이터 로드
+        if preloaded_data:
+            coords_list = preloaded_data['coords_list']
+            frames_list = preloaded_data['frames_list']
+            input_latent_list = preloaded_data['input_latent_list']
+            fps = preloaded_data['fps']
+        else:
+            with open(precomputed_path, 'rb') as f:
+                precomputed = pickle.load(f)
+            coords_list = precomputed.get('coords_list', precomputed.get('coord_list_cycle'))
+            frames_list = precomputed.get('frames', precomputed.get('frame_list_cycle'))
+            input_latent_list = precomputed.get('input_latent_list', precomputed.get('input_latent_list_cycle'))
+            fps = precomputed.get('fps', 25)
+
+        extra_margin = 10
+
+        # 오디오 처리
+        emit_callback('status', {'message': '오디오 처리 중...', 'progress': 5, 'elapsed': time.time() - start_time}, to=sid)
+
+        whisper_input_features, librosa_length = self.audio_processor.get_audio_feature(audio_input)
+        whisper_chunks = self.audio_processor.get_whisper_chunk(
+            whisper_input_features,
+            self.device,
+            self.weight_dtype,
+            self.whisper,
+            librosa_length,
+            fps=fps,
+            audio_padding_length_left=2,
+            audio_padding_length_right=2,
+        )
+
+        num_frames = len(whisper_chunks)
+        if num_frames == 0:
+            raise ValueError("오디오에서 프레임을 생성할 수 없습니다")
+
+        # 프레임 스킵 설정
+        frame_skip = max(1, min(frame_skip, 3))
+        if frame_skip > 1:
+            inference_indices = list(range(0, num_frames, frame_skip))
+            if inference_indices[-1] != num_frames - 1:
+                inference_indices.append(num_frames - 1)
+        else:
+            inference_indices = list(range(num_frames))
+
+        # latent 준비
+        extended_latent_list = []
+        selected_whisper_chunks = []
+        for i in inference_indices:
+            idx = i % len(input_latent_list)
+            latent = input_latent_list[idx]
+            if isinstance(latent, torch.Tensor):
+                latent = latent.to(self.device, dtype=self.weight_dtype)
+            extended_latent_list.append(latent)
+            selected_whisper_chunks.append(whisper_chunks[i])
+
+        # 스트리밍 시작 신호
+        emit_callback('stream_start', {
+            'total_frames': num_frames,
+            'fps': fps,
+            'elapsed': time.time() - start_time
+        }, to=sid)
+
+        # 페이드 프레임 수
+        fade_frames = min(8, num_frames // 4)
+
+        # 배치 단위로 처리하며 즉시 전송
+        gen = datagen(
+            whisper_chunks=selected_whisper_chunks,
+            vae_encode_latents=extended_latent_list,
+            batch_size=batch_size,
+            delay_frame=0,
+            device=self.device,
+        )
+
+        inference_results = {}  # 추론 결과 저장 (인덱스 -> 프레임)
+        batch_idx = 0
+
+        for whisper_batch, latent_batch in gen:
+            # UNet 추론
+            latent_batch = latent_batch.to(dtype=self.weight_dtype)
+
+            with torch.no_grad():
+                if self.use_tensorrt:
+                    pred_latents = self.unet_session.run(
+                        None,
+                        {
+                            "sample": latent_batch.cpu().numpy(),
+                            "audio_embedding": whisper_batch.cpu().numpy()
+                        }
+                    )[0]
+                    pred_latents = torch.from_numpy(pred_latents).to(self.device)
+                else:
+                    pred_latents = self.unet(latent_batch, whisper_batch)
+
+            # VAE 디코딩
+            recon_frames = self.vae.decode_latents(pred_latents)
+
+            # 배치 내 각 프레임 처리 및 즉시 전송
+            for i, res_frame in enumerate(recon_frames):
+                global_idx = batch_idx * batch_size + i
+                if global_idx >= len(inference_indices):
+                    break
+
+                original_frame_idx = inference_indices[global_idx]
+                inference_results[original_frame_idx] = res_frame
+
+            batch_idx += 1
+
+            # 진행률 업데이트
+            progress = min(80, 10 + int(70 * batch_idx * batch_size / len(inference_indices)))
+            emit_callback('status', {
+                'message': f'추론 중... ({min(batch_idx * batch_size, len(inference_indices))}/{len(inference_indices)})',
+                'progress': progress,
+                'elapsed': time.time() - start_time
+            }, to=sid)
+
+        # 프레임 보간 (frame_skip > 1인 경우)
+        all_frames = {}
+        if frame_skip > 1:
+            for i in range(num_frames):
+                if i in inference_results:
+                    all_frames[i] = inference_results[i]
+                else:
+                    # 선형 보간
+                    prev_idx = (i // frame_skip) * frame_skip
+                    next_idx = min(prev_idx + frame_skip, num_frames - 1)
+                    if next_idx in inference_results and prev_idx in inference_results:
+                        alpha = (i - prev_idx) / (next_idx - prev_idx) if next_idx != prev_idx else 0
+                        all_frames[i] = cv2.addWeighted(
+                            inference_results[prev_idx].astype(np.float32), 1 - alpha,
+                            inference_results[next_idx].astype(np.float32), alpha, 0
+                        ).astype(np.uint8)
+                    else:
+                        all_frames[i] = inference_results.get(prev_idx, inference_results[min(inference_results.keys())])
+        else:
+            all_frames = inference_results
+
+        # 블렌딩 및 프레임 전송
+        emit_callback('status', {'message': '프레임 전송 중...', 'progress': 85, 'elapsed': time.time() - start_time}, to=sid)
+
+        for i in range(num_frames):
+            res_frame = all_frames.get(i)
+            if res_frame is None:
+                continue
+
+            idx = i % len(coords_list)
+            coord = coords_list[idx]
+            original_frame = frames_list[idx].copy()
+            x1, y1, x2, y2 = [int(c) for c in coord]
+
+            try:
+                # 선명화 + 리사이즈
+                res_frame_uint8 = res_frame.astype(np.uint8)
+                gaussian = cv2.GaussianBlur(res_frame_uint8, (0, 0), 2.0)
+                sharpened = cv2.addWeighted(res_frame_uint8, 1.5, gaussian, -0.5, 0)
+                pred_frame_resized = cv2.resize(sharpened, (x2 - x1, y2 - y1), interpolation=cv2.INTER_LANCZOS4)
+            except Exception:
+                continue
+
+            # 블렌딩
+            result_frame = get_image(original_frame, pred_frame_resized, [x1, y1, x2, y2], mode="jaw", fp=face_parsing)
+
+            # 페이드 처리
+            if i < fade_frames:
+                alpha = i / fade_frames
+                result_frame = cv2.addWeighted(original_frame, 1 - alpha, result_frame, alpha, 0)
+            elif i >= num_frames - fade_frames:
+                remaining = num_frames - i - 1
+                alpha = remaining / fade_frames
+                result_frame = cv2.addWeighted(original_frame, 1 - alpha, result_frame, alpha, 0)
+
+            # JPEG 인코딩 및 Base64 변환
+            _, buffer = cv2.imencode('.jpg', result_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            frame_base64 = base64.b64encode(buffer).decode('utf-8')
+
+            # 프레임 전송
+            emit_callback('stream_frame', {
+                'frame': frame_base64,
+                'index': i,
+                'total': num_frames,
+                'fps': fps
+            }, to=sid)
+
+        # 완료 신호
+        elapsed = time.time() - start_time
+        emit_callback('stream_complete', {
+            'total_frames': num_frames,
+            'elapsed': elapsed,
+            'fps': fps
+        }, to=sid)
+
+        print(f"\n스트리밍 립싱크 완료! ({elapsed:.1f}초)")
+        return True
+
 
 # TTS 엔진 설정
 TTS_ENGINES = {
@@ -1634,6 +1851,9 @@ def api_generate_streaming():
                 return
 
             start_time = client_sessions[sid]['start_time']
+            import base64
+            import soundfile as sf
+            import io
 
             # 1. TTS 생성 (메모리에서 직접 처리)
             engine_name = TTS_ENGINES.get(tts_engine, {}).get('name', tts_engine)
@@ -1651,35 +1871,38 @@ def api_generate_streaming():
                 socketio.emit('cancelled', {'message': '생성이 취소되었습니다'}, to=sid)
                 return
 
-            # 2. 립싱크 생성 (파일 없이 numpy array 전달)
+            # 2. 오디오를 Base64로 인코딩하여 즉시 전송
+            audio_buffer = io.BytesIO()
+            sf.write(audio_buffer, audio_numpy, sample_rate, format='WAV')
+            audio_buffer.seek(0)
+            audio_base64 = base64.b64encode(audio_buffer.read()).decode('utf-8')
+
+            # 오디오 먼저 전송 (클라이언트가 오디오를 먼저 로드할 수 있음)
+            socketio.emit('stream_audio', {
+                'audio': audio_base64,
+                'sample_rate': sample_rate,
+                'elapsed': time.time() - start_time
+            }, to=sid)
+
+            # 3. 스트리밍 립싱크 생성
             skip_info = f" (frame_skip={frame_skip})" if frame_skip > 1 else ""
             socketio.emit('status', {
-                'message': f'립싱크 생성 시작...{skip_info}',
+                'message': f'스트리밍 립싱크 시작...{skip_info}',
                 'progress': 10,
                 'elapsed': time.time() - start_time
             }, to=sid)
 
-            output_video = lipsync_engine.generate_lipsync(
+            result = lipsync_engine.generate_lipsync_streaming(
                 avatar_path,
-                (audio_numpy, sample_rate),  # numpy array 전달
-                output_dir="results/realtime",
-                sid=sid,  # WebSocket 세션 ID 전달
-                frame_skip=frame_skip  # 프레임 스킵 적용
+                (audio_numpy, sample_rate),
+                sid=sid,
+                emit_callback=socketio.emit,
+                frame_skip=frame_skip
             )
 
             if sid in client_sessions and client_sessions[sid]['cancelled']:
                 socketio.emit('cancelled', {'message': '생성이 취소되었습니다'}, to=sid)
                 return
-
-            if output_video:
-                elapsed = time.time() - start_time
-                socketio.emit('status', {'message': '완료!', 'progress': 100, 'elapsed': elapsed}, to=sid)
-                socketio.emit('complete', {
-                    'video_path': 'results/realtime/output_with_audio.mp4',
-                    'elapsed': elapsed
-                }, to=sid)
-            else:
-                socketio.emit('error', {'message': '립싱크 생성 실패'}, to=sid)
 
         except Exception as e:
             import traceback

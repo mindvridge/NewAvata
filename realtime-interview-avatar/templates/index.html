@@ -682,16 +682,27 @@
         let streamFrameBuffer = [];  // 프레임 버퍼
         let streamAudio = null;      // 스트리밍 오디오
         let isStreamPlaying = false; // 스트리밍 재생 중
-        const BUFFER_THRESHOLD = 30; // 버퍼 임계값
+        let streamTotalFrames = 0;   // 전체 프레임 수
+        const BUFFER_THRESHOLD = 15; // 버퍼 임계값 (낮춤 - 빠른 재생 시작)
+
+        socket.on('stream_start', (data) => {
+            console.log('Stream start:', data);
+            resetStreamState();
+            streamTotalFrames = data.total_frames;
+            streamFps = data.fps || 25;
+            document.getElementById('statusText').textContent =
+                `스트리밍 시작 (${streamTotalFrames}프레임, ${streamFps}fps)`;
+        });
 
         socket.on('stream_audio', (data) => {
-            console.log('Stream audio:', data);
-            // 오디오 준비
-            streamAudio = new Audio(data.audio_url);
+            console.log('Stream audio received, elapsed:', data.elapsed);
+            // Base64 오디오 데이터로 Audio 객체 생성
+            streamAudio = new Audio('data:audio/wav;base64,' + data.audio);
             streamAudio.preload = 'auto';
 
             // 버퍼가 충분하면 재생 시작
-            if (streamFrameBuffer.length >= BUFFER_THRESHOLD && !isStreamPlaying) {
+            const bufferCount = streamFrameBuffer.filter(f => f).length;
+            if (bufferCount >= BUFFER_THRESHOLD && !isStreamPlaying) {
                 startStreamPlayback();
             }
         });
@@ -800,11 +811,12 @@
             isGenerating = false;
             updateUIState(false);
 
-            document.getElementById('elapsedTime').textContent = `완료: ${data.total_time.toFixed(1)}초`;
+            const elapsed = data.elapsed || data.total_time || 0;
+            document.getElementById('elapsedTime').textContent = `완료: ${elapsed.toFixed(1)}초`;
             document.getElementById('statsContainer').style.display = 'grid';
-            document.getElementById('statTotal').textContent = data.total_time.toFixed(1);
+            document.getElementById('statTotal').textContent = elapsed.toFixed(1);
             document.getElementById('statusText').textContent =
-                `완료 (${data.total_frames}프레임, ${data.total_time.toFixed(1)}초)`;
+                `완료 (${data.total_frames}프레임, ${elapsed.toFixed(1)}초)`;
         });
 
         socket.on('stream_error', (data) => {
@@ -955,7 +967,8 @@
                             text: chatData.response,
                             tts_engine: ttsEngine,
                             tts_voice: ttsVoice,
-                            sid: clientSid
+                            sid: clientSid,
+                            frame_skip: 2  // 스트리밍 최적화
                         })
                     });
                 } else {
@@ -1054,7 +1067,8 @@
                             text: chatData.response,
                             tts_engine: ttsEngine,
                             tts_voice: ttsVoice,
-                            sid: clientSid
+                            sid: clientSid,
+                            frame_skip: 2  // 스트리밍 최적화
                         })
                     });
                 } else {
