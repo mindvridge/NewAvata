@@ -68,14 +68,15 @@ from queue import Queue
 from collections import OrderedDict
 import uuid
 
-class GenerationQueue:
-    """립싱크 생성 요청 큐 시스템"""
+class ParallelGenerationQueue:
+    """병렬 립싱크 생성 요청 큐 시스템 (동시 2개 처리)"""
+
+    MAX_CONCURRENT = 2  # 동시 처리 최대 수
 
     def __init__(self):
         self.queue = OrderedDict()  # {request_id: request_data}
-        self.current_request = None  # 현재 처리 중인 요청
+        self.processing = {}  # {request_id: request_data} 현재 처리 중인 요청들
         self.lock = threading.Lock()
-        self.processing = False
 
     def add_request(self, sid, request_data):
         """새 요청 추가, 요청 ID 반환"""
@@ -86,25 +87,31 @@ class GenerationQueue:
             request_data['queued_at'] = time.time()
             request_data['status'] = 'queued'
             self.queue[request_id] = request_data
-            position = list(self.queue.keys()).index(request_id) + 1
+
+            # 대기 순서 계산 (처리 중인 것 이후)
+            position = len(self.processing) + list(self.queue.keys()).index(request_id) + 1
             return request_id, position
 
     def get_next(self):
-        """다음 요청 가져오기"""
+        """다음 요청 가져오기 (동시 처리 수 제한 확인)"""
         with self.lock:
+            # 이미 최대 동시 처리 수에 도달했으면 None 반환
+            if len(self.processing) >= self.MAX_CONCURRENT:
+                return None
             if not self.queue:
                 return None
+
             request_id, request_data = next(iter(self.queue.items()))
             del self.queue[request_id]
-            self.current_request = request_data
-            self.processing = True
+            request_data['status'] = 'processing'
+            self.processing[request_id] = request_data
             return request_data
 
-    def complete_current(self):
-        """현재 요청 완료"""
+    def complete_request(self, request_id):
+        """특정 요청 완료"""
         with self.lock:
-            self.current_request = None
-            self.processing = False
+            if request_id in self.processing:
+                del self.processing[request_id]
 
     def cancel_request(self, sid):
         """특정 클라이언트의 요청 취소"""
@@ -113,16 +120,21 @@ class GenerationQueue:
             to_remove = [rid for rid, data in self.queue.items() if data.get('sid') == sid]
             for rid in to_remove:
                 del self.queue[rid]
-            # 현재 처리 중인 요청이 해당 sid면 취소 표시
-            if self.current_request and self.current_request.get('sid') == sid:
-                self.current_request['cancelled'] = True
+            # 처리 중인 요청 중 해당 sid 취소 표시
+            for rid, data in self.processing.items():
+                if data.get('sid') == sid:
+                    data['cancelled'] = True
             return len(to_remove) > 0
 
     def get_position(self, sid):
         """클라이언트의 대기 순서 반환 (0=처리중, -1=없음)"""
         with self.lock:
-            if self.current_request and self.current_request.get('sid') == sid:
-                return 0  # 현재 처리 중
+            # 처리 중인지 확인
+            for rid, data in self.processing.items():
+                if data.get('sid') == sid:
+                    return 0  # 현재 처리 중
+
+            # 대기열에서 위치 확인
             for i, (rid, data) in enumerate(self.queue.items()):
                 if data.get('sid') == sid:
                     return i + 1  # 대기 순서 (1부터 시작)
@@ -133,8 +145,16 @@ class GenerationQueue:
         with self.lock:
             return {
                 'queue_length': len(self.queue),
-                'processing': self.processing,
-                'current_sid': self.current_request.get('sid') if self.current_request else None,
+                'processing_count': len(self.processing),
+                'max_concurrent': self.MAX_CONCURRENT,
+                'processing': [
+                    {
+                        'request_id': rid,
+                        'sid': data.get('sid'),
+                        'started_at': data.get('queued_at')
+                    }
+                    for rid, data in self.processing.items()
+                ],
                 'queue': [
                     {
                         'request_id': rid,
@@ -146,8 +166,13 @@ class GenerationQueue:
                 ]
             }
 
+    def can_process_more(self):
+        """추가 요청 처리 가능 여부"""
+        with self.lock:
+            return len(self.processing) < self.MAX_CONCURRENT and len(self.queue) > 0
+
 # 전역 큐 인스턴스
-generation_queue = GenerationQueue()
+generation_queue = ParallelGenerationQueue()
 
 
 class LipsyncEngine:
@@ -791,11 +816,12 @@ class LipsyncEngine:
         else:
             socketio.emit('status', emit_kwargs)
 
-        # 비디오 저장
+        # 비디오 저장 (병렬 처리를 위해 고유 ID 사용)
         t0 = time.time()
         print("비디오 저장 중...")
-        temp_video = str(output_path / "temp_output.mp4")
-        final_video = str(output_path / "output_with_audio.mp4")
+        unique_id = str(uuid.uuid4())[:8]
+        temp_video = str(output_path / f"temp_output_{unique_id}.mp4")
+        final_video = str(output_path / f"output_{unique_id}.mp4")
 
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         h, w = generated_frames[0].shape[:2]
@@ -817,10 +843,10 @@ class LipsyncEngine:
         else:
             socketio.emit('status', emit_kwargs)
 
-        # audio_input이 튜플이면 임시 파일 생성
+        # audio_input이 튜플이면 임시 파일 생성 (고유 ID 사용)
         if isinstance(audio_input, tuple):
             import soundfile as sf
-            temp_audio = str(output_path / "temp_audio.wav")
+            temp_audio = str(output_path / f"temp_audio_{unique_id}.wav")
             audio_numpy, sample_rate = audio_input
             sf.write(temp_audio, audio_numpy, sample_rate)
             audio_file_path = temp_audio
@@ -1328,8 +1354,28 @@ def api_llm_status():
 
 @app.route('/api/queue_status')
 def api_queue_status():
-    """큐 상태 확인 API"""
+    """큐 상태 확인 API (GPU 메모리 정보 포함)"""
     status = generation_queue.get_status()
+
+    # GPU 메모리 정보 추가
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=memory.total,memory.used,memory.free,utilization.gpu', '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            parts = result.stdout.strip().split(', ')
+            if len(parts) >= 4:
+                status['gpu'] = {
+                    'memory_total_mb': int(parts[0]),
+                    'memory_used_mb': int(parts[1]),
+                    'memory_free_mb': int(parts[2]),
+                    'utilization_percent': int(parts[3])
+                }
+    except Exception as e:
+        status['gpu'] = {'error': str(e)}
+
     return jsonify(status)
 
 
@@ -1578,51 +1624,82 @@ def api_generate():
     })
 
 
-# 큐 워커 스레드
-queue_worker_thread = None
-queue_worker_running = False
+# 병렬 큐 워커 관리
+queue_manager_thread = None
+queue_manager_running = False
+active_worker_threads = []  # 현재 활성 워커 스레드들
+worker_threads_lock = threading.Lock()
 
-def start_queue_worker():
-    """큐 처리 워커 시작"""
-    global queue_worker_thread, queue_worker_running
+def start_queue_manager():
+    """병렬 큐 관리자 시작 - 동시에 여러 워커 실행"""
+    global queue_manager_thread, queue_manager_running
 
-    if queue_worker_running:
+    if queue_manager_running:
         return  # 이미 실행 중
 
-    def worker():
-        global queue_worker_running
-        queue_worker_running = True
-        print("[Queue Worker] 시작")
+    def manager():
+        global queue_manager_running
+        queue_manager_running = True
+        print(f"[Queue Manager] 시작 (최대 동시 처리: {ParallelGenerationQueue.MAX_CONCURRENT})")
 
-        while True:
-            # 다음 요청 가져오기
-            request_data = generation_queue.get_next()
-            if request_data is None:
-                break  # 큐가 비었으면 종료
+        while queue_manager_running:
+            # 대기열에 요청이 있고 처리 슬롯이 남아있으면 워커 시작
+            while generation_queue.can_process_more():
+                request_data = generation_queue.get_next()
+                if request_data is None:
+                    break
 
-            sid = request_data.get('sid')
-            print(f"[Queue Worker] 처리 시작: {sid}")
+                # 새 워커 스레드 시작
+                worker_thread = threading.Thread(
+                    target=process_request_worker,
+                    args=(request_data,),
+                    daemon=True
+                )
+                with worker_threads_lock:
+                    active_worker_threads.append(worker_thread)
+                worker_thread.start()
 
-            # 대기 중인 클라이언트들에게 순서 업데이트
-            broadcast_queue_update()
-
-            try:
-                process_generation_request(request_data)
-            except Exception as e:
-                print(f"[Queue Worker] 오류: {e}")
-                import traceback
-                traceback.print_exc()
-                socketio.emit('error', {'message': str(e)}, to=sid)
-            finally:
-                generation_queue.complete_current()
-                # 다시 대기 중인 클라이언트들에게 순서 업데이트
+                # 대기 중인 클라이언트들에게 순서 업데이트
                 broadcast_queue_update()
 
-        queue_worker_running = False
-        print("[Queue Worker] 종료")
+            # 완료된 워커 스레드 정리
+            with worker_threads_lock:
+                active_worker_threads[:] = [t for t in active_worker_threads if t.is_alive()]
 
-    queue_worker_thread = threading.Thread(target=worker, daemon=True)
-    queue_worker_thread.start()
+            # 짧은 대기 (CPU 부하 방지)
+            time.sleep(0.1)
+
+        print("[Queue Manager] 종료")
+
+    queue_manager_thread = threading.Thread(target=manager, daemon=True)
+    queue_manager_thread.start()
+
+
+def process_request_worker(request_data):
+    """개별 요청 처리 워커"""
+    request_id = request_data.get('request_id')
+    sid = request_data.get('sid')
+
+    print(f"[Worker-{request_id}] 처리 시작: {sid}")
+
+    try:
+        process_generation_request(request_data)
+    except Exception as e:
+        print(f"[Worker-{request_id}] 오류: {e}")
+        import traceback
+        traceback.print_exc()
+        socketio.emit('error', {'message': str(e)}, to=sid)
+    finally:
+        generation_queue.complete_request(request_id)
+        print(f"[Worker-{request_id}] 완료")
+        # 대기 중인 클라이언트들에게 순서 업데이트
+        broadcast_queue_update()
+
+
+# 기존 함수명 호환성 유지
+def start_queue_worker():
+    """기존 함수명 호환 - queue manager 시작"""
+    start_queue_manager()
 
 
 def broadcast_queue_update():
