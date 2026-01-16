@@ -1145,6 +1145,101 @@ def api_tts_engines():
     return jsonify(engines)
 
 
+@app.route('/api/llm_status')
+def api_llm_status():
+    """LLM 서버 상태 확인 API"""
+    import requests
+
+    llm_api_url = os.getenv('LLM_API_URL', 'https://api.mindprep.co.kr/v1/chat/completions')
+    llm_model = os.getenv('LLM_MODEL', 'vllm-qwen3-30b-a3b')
+    openai_api_key = os.getenv('OPENAI_API_KEY', '')
+
+    status = {
+        'primary': {
+            'name': f'LLM API Server ({llm_model})',
+            'url': llm_api_url,
+            'status': 'unknown',
+            'latency': None
+        },
+        'fallback': {
+            'name': 'OpenAI API (gpt-4o-mini)',
+            'configured': bool(openai_api_key),
+            'status': 'unknown',
+            'latency': None
+        },
+        'active': None
+    }
+
+    # 1. LLM API Server 상태 확인
+    try:
+        start_time = time.time()
+        # 간단한 테스트 요청 (짧은 메시지)
+        response = requests.post(
+            llm_api_url,
+            json={
+                "model": llm_model,
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 5
+            },
+            timeout=5
+        )
+        latency = (time.time() - start_time) * 1000  # ms
+
+        if response.status_code == 200:
+            status['primary']['status'] = 'online'
+            status['primary']['latency'] = round(latency)
+            status['active'] = 'primary'
+        else:
+            status['primary']['status'] = 'error'
+            status['primary']['error'] = f'HTTP {response.status_code}'
+    except requests.exceptions.Timeout:
+        status['primary']['status'] = 'timeout'
+    except requests.exceptions.ConnectionError:
+        status['primary']['status'] = 'offline'
+    except Exception as e:
+        status['primary']['status'] = 'error'
+        status['primary']['error'] = str(e)
+
+    # 2. OpenAI API 상태 확인 (설정된 경우만)
+    if openai_api_key:
+        try:
+            start_time = time.time()
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {openai_api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "gpt-4o-mini",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 5
+                },
+                timeout=10
+            )
+            latency = (time.time() - start_time) * 1000  # ms
+
+            if response.status_code == 200:
+                status['fallback']['status'] = 'online'
+                status['fallback']['latency'] = round(latency)
+                if status['active'] is None:
+                    status['active'] = 'fallback'
+            else:
+                status['fallback']['status'] = 'error'
+                status['fallback']['error'] = f'HTTP {response.status_code}'
+        except requests.exceptions.Timeout:
+            status['fallback']['status'] = 'timeout'
+        except requests.exceptions.ConnectionError:
+            status['fallback']['status'] = 'offline'
+        except Exception as e:
+            status['fallback']['status'] = 'error'
+            status['fallback']['error'] = str(e)
+    else:
+        status['fallback']['status'] = 'not_configured'
+
+    return jsonify(status)
+
+
 def load_precomputed_data(precomputed_path):
     """프리컴퓨트 데이터 로드 (병렬화용)"""
     with open(precomputed_path, 'rb') as f:

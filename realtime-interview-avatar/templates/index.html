@@ -434,6 +434,74 @@
             display: none;
         }
 
+        /* LLM 상태 표시 */
+        .llm-status-container {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin-top: 15px;
+            flex-wrap: wrap;
+        }
+
+        .llm-status-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 20px;
+            font-size: 0.9em;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .llm-status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        .llm-status-dot.online {
+            background: #4caf50;
+            box-shadow: 0 0 8px #4caf50;
+        }
+
+        .llm-status-dot.offline {
+            background: #f44336;
+            box-shadow: 0 0 8px #f44336;
+            animation: none;
+        }
+
+        .llm-status-dot.checking {
+            background: #ff9800;
+            box-shadow: 0 0 8px #ff9800;
+        }
+
+        .llm-status-dot.not_configured {
+            background: #9e9e9e;
+            box-shadow: none;
+            animation: none;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .llm-status-name {
+            color: #ccc;
+        }
+
+        .llm-status-latency {
+            color: #888;
+            font-size: 0.85em;
+        }
+
+        .llm-status-active {
+            border-color: #4caf50;
+            background: rgba(76, 175, 80, 0.1);
+        }
+
         @media (max-width: 768px) {
             .main-content {
                 grid-template-columns: 1fr;
@@ -446,6 +514,18 @@
         <header>
             <h1>AI Interview</h1>
             <p>AI 면접관과 실시간 면접 연습</p>
+            <div class="llm-status-container" id="llmStatusContainer">
+                <div class="llm-status-item" id="llmPrimaryStatus">
+                    <span class="llm-status-dot checking" id="llmPrimaryDot"></span>
+                    <span class="llm-status-name" id="llmPrimaryName">LLM API</span>
+                    <span class="llm-status-latency" id="llmPrimaryLatency">확인 중...</span>
+                </div>
+                <div class="llm-status-item" id="llmFallbackStatus">
+                    <span class="llm-status-dot checking" id="llmFallbackDot"></span>
+                    <span class="llm-status-name" id="llmFallbackName">OpenAI</span>
+                    <span class="llm-status-latency" id="llmFallbackLatency">확인 중...</span>
+                </div>
+            </div>
         </header>
 
         <div class="main-content">
@@ -576,6 +656,75 @@
         let streamCtx = null;  // Canvas context
         let streamFps = 25;  // 스트리밍 FPS
         let clientSid = null;  // 클라이언트 세션 ID
+
+        // LLM 상태 확인 함수
+        async function checkLLMStatus() {
+            try {
+                const response = await fetch('/api/llm_status');
+                const status = await response.json();
+
+                // Primary (LLM API Server) 상태 표시
+                const primaryDot = document.getElementById('llmPrimaryDot');
+                const primaryName = document.getElementById('llmPrimaryName');
+                const primaryLatency = document.getElementById('llmPrimaryLatency');
+                const primaryItem = document.getElementById('llmPrimaryStatus');
+
+                primaryDot.className = 'llm-status-dot ' + status.primary.status;
+                primaryName.textContent = status.primary.name;
+
+                if (status.primary.status === 'online') {
+                    primaryLatency.textContent = status.primary.latency + 'ms';
+                } else if (status.primary.status === 'offline') {
+                    primaryLatency.textContent = '오프라인';
+                } else if (status.primary.status === 'timeout') {
+                    primaryLatency.textContent = '타임아웃';
+                } else if (status.primary.status === 'error') {
+                    primaryLatency.textContent = status.primary.error || '오류';
+                }
+
+                // Fallback (OpenAI) 상태 표시
+                const fallbackDot = document.getElementById('llmFallbackDot');
+                const fallbackName = document.getElementById('llmFallbackName');
+                const fallbackLatency = document.getElementById('llmFallbackLatency');
+                const fallbackItem = document.getElementById('llmFallbackStatus');
+
+                fallbackDot.className = 'llm-status-dot ' + status.fallback.status;
+                fallbackName.textContent = status.fallback.name;
+
+                if (status.fallback.status === 'online') {
+                    fallbackLatency.textContent = status.fallback.latency + 'ms';
+                } else if (status.fallback.status === 'not_configured') {
+                    fallbackLatency.textContent = '미설정';
+                } else if (status.fallback.status === 'offline') {
+                    fallbackLatency.textContent = '오프라인';
+                } else if (status.fallback.status === 'timeout') {
+                    fallbackLatency.textContent = '타임아웃';
+                } else if (status.fallback.status === 'error') {
+                    fallbackLatency.textContent = status.fallback.error || '오류';
+                }
+
+                // 활성 서버 표시
+                primaryItem.classList.remove('llm-status-active');
+                fallbackItem.classList.remove('llm-status-active');
+
+                if (status.active === 'primary') {
+                    primaryItem.classList.add('llm-status-active');
+                } else if (status.active === 'fallback') {
+                    fallbackItem.classList.add('llm-status-active');
+                }
+
+                console.log('LLM Status:', status);
+            } catch (error) {
+                console.error('LLM status check failed:', error);
+                document.getElementById('llmPrimaryLatency').textContent = '확인 실패';
+                document.getElementById('llmFallbackLatency').textContent = '확인 실패';
+            }
+        }
+
+        // 페이지 로드시 LLM 상태 확인
+        checkLLMStatus();
+        // 30초마다 상태 갱신
+        setInterval(checkLLMStatus, 30000);
 
         // WebSocket 이벤트
         socket.on('connect', () => {
