@@ -63,6 +63,92 @@ models_loaded = False  # 모델 로드 상태
 client_sessions = {}  # {sid: {'cancelled': False, 'start_time': None, 'generating': False}}
 generation_lock = threading.Lock()  # 동시 생성 방지 락
 
+# 큐 시스템
+from queue import Queue
+from collections import OrderedDict
+import uuid
+
+class GenerationQueue:
+    """립싱크 생성 요청 큐 시스템"""
+
+    def __init__(self):
+        self.queue = OrderedDict()  # {request_id: request_data}
+        self.current_request = None  # 현재 처리 중인 요청
+        self.lock = threading.Lock()
+        self.processing = False
+
+    def add_request(self, sid, request_data):
+        """새 요청 추가, 요청 ID 반환"""
+        with self.lock:
+            request_id = str(uuid.uuid4())[:8]
+            request_data['request_id'] = request_id
+            request_data['sid'] = sid
+            request_data['queued_at'] = time.time()
+            request_data['status'] = 'queued'
+            self.queue[request_id] = request_data
+            position = list(self.queue.keys()).index(request_id) + 1
+            return request_id, position
+
+    def get_next(self):
+        """다음 요청 가져오기"""
+        with self.lock:
+            if not self.queue:
+                return None
+            request_id, request_data = next(iter(self.queue.items()))
+            del self.queue[request_id]
+            self.current_request = request_data
+            self.processing = True
+            return request_data
+
+    def complete_current(self):
+        """현재 요청 완료"""
+        with self.lock:
+            self.current_request = None
+            self.processing = False
+
+    def cancel_request(self, sid):
+        """특정 클라이언트의 요청 취소"""
+        with self.lock:
+            # 큐에서 해당 sid의 요청 제거
+            to_remove = [rid for rid, data in self.queue.items() if data.get('sid') == sid]
+            for rid in to_remove:
+                del self.queue[rid]
+            # 현재 처리 중인 요청이 해당 sid면 취소 표시
+            if self.current_request and self.current_request.get('sid') == sid:
+                self.current_request['cancelled'] = True
+            return len(to_remove) > 0
+
+    def get_position(self, sid):
+        """클라이언트의 대기 순서 반환 (0=처리중, -1=없음)"""
+        with self.lock:
+            if self.current_request and self.current_request.get('sid') == sid:
+                return 0  # 현재 처리 중
+            for i, (rid, data) in enumerate(self.queue.items()):
+                if data.get('sid') == sid:
+                    return i + 1  # 대기 순서 (1부터 시작)
+            return -1  # 큐에 없음
+
+    def get_status(self):
+        """큐 상태 반환"""
+        with self.lock:
+            return {
+                'queue_length': len(self.queue),
+                'processing': self.processing,
+                'current_sid': self.current_request.get('sid') if self.current_request else None,
+                'queue': [
+                    {
+                        'request_id': rid,
+                        'sid': data.get('sid'),
+                        'queued_at': data.get('queued_at'),
+                        'wait_time': time.time() - data.get('queued_at', time.time())
+                    }
+                    for rid, data in self.queue.items()
+                ]
+            }
+
+# 전역 큐 인스턴스
+generation_queue = GenerationQueue()
+
 
 class LipsyncEngine:
     """립싱크 엔진 - 모델 프리로드 및 추론 (TensorRT 지원)"""
@@ -1240,6 +1326,24 @@ def api_llm_status():
     return jsonify(status)
 
 
+@app.route('/api/queue_status')
+def api_queue_status():
+    """큐 상태 확인 API"""
+    status = generation_queue.get_status()
+    return jsonify(status)
+
+
+@app.route('/api/queue_position/<sid>')
+def api_queue_position(sid):
+    """특정 클라이언트의 대기 순서 확인"""
+    position = generation_queue.get_position(sid)
+    return jsonify({
+        'sid': sid,
+        'position': position,
+        'status': 'processing' if position == 0 else ('queued' if position > 0 else 'not_in_queue')
+    })
+
+
 def load_precomputed_data(precomputed_path):
     """프리컴퓨트 데이터 로드 (병렬화용)"""
     with open(precomputed_path, 'rb') as f:
@@ -1410,7 +1514,7 @@ def generate_tts_audio(text, engine, voice, output_path=None):
 
 @app.route('/api/generate', methods=['POST'])
 def api_generate():
-    """립싱크 비디오 생성 API"""
+    """립싱크 비디오 생성 API (큐 시스템)"""
     global current_process, lipsync_engine
 
     data = request.json
@@ -1431,90 +1535,183 @@ def api_generate():
     if not client_sid:
         return jsonify({"error": "sid가 필요합니다"}), 400
 
-    # 동시 생성 방지
-    with generation_lock:
-        # 이미 생성 중인 클라이언트가 있는지 확인
-        for sid, session in client_sessions.items():
-            if session.get('generating'):
-                if sid == client_sid:
-                    return jsonify({"error": "이미 생성 중입니다"}), 400
-                else:
-                    return jsonify({"error": "다른 클라이언트가 생성 중입니다. 잠시 후 다시 시도해주세요."}), 400
+    # 이미 대기 중인지 확인
+    existing_position = generation_queue.get_position(client_sid)
+    if existing_position >= 0:
+        return jsonify({
+            "error": "이미 대기열에 있습니다",
+            "position": existing_position
+        }), 400
 
-        # 클라이언트 세션 초기화
-        if client_sid in client_sessions:
-            client_sessions[client_sid]['cancelled'] = False
-            client_sessions[client_sid]['start_time'] = time.time()
-            client_sessions[client_sid]['generating'] = True
+    # 요청을 큐에 추가
+    request_data = {
+        'avatar_path': avatar_path,
+        'text': text,
+        'tts_engine': tts_engine,
+        'tts_voice': tts_voice,
+        'frame_skip': frame_skip,
+        'resolution': resolution
+    }
+    request_id, position = generation_queue.add_request(client_sid, request_data)
 
-    def generate_async(sid):
-        try:
-            if sid not in client_sessions:
-                print(f"[ERROR] SID {sid} not in client_sessions")
-                return
+    # 대기 순서 알림
+    if position > 1:
+        socketio.emit('queue_update', {
+            'position': position,
+            'message': f'대기열 {position}번째 - 잠시만 기다려주세요',
+            'request_id': request_id
+        }, to=client_sid)
+    else:
+        socketio.emit('queue_update', {
+            'position': position,
+            'message': '곧 시작합니다...',
+            'request_id': request_id
+        }, to=client_sid)
 
-            start_time = client_sessions[sid]['start_time']
+    # 큐 처리 워커 시작 (이미 실행 중이면 무시)
+    start_queue_worker()
 
-            # 1. TTS 생성 (메모리에서 직접 처리)
-            engine_name = TTS_ENGINES.get(tts_engine, {}).get('name', tts_engine)
-            socketio.emit('status', {'message': f'TTS 생성 중 ({engine_name})...', 'progress': 0, 'elapsed': 0}, to=sid)
+    return jsonify({
+        "status": "queued",
+        "position": position,
+        "request_id": request_id
+    })
 
-            tts_result = generate_tts_audio(text, tts_engine, tts_voice)
 
-            if tts_result is None:
-                socketio.emit('error', {'message': f'TTS 생성 실패 ({engine_name})'}, to=sid)
-                return
+# 큐 워커 스레드
+queue_worker_thread = None
+queue_worker_running = False
 
-            audio_numpy, sample_rate = tts_result
+def start_queue_worker():
+    """큐 처리 워커 시작"""
+    global queue_worker_thread, queue_worker_running
 
-            if sid in client_sessions and client_sessions[sid]['cancelled']:
-                socketio.emit('cancelled', {'message': '생성이 취소되었습니다'}, to=sid)
-                return
+    if queue_worker_running:
+        return  # 이미 실행 중
 
-            # 2. 립싱크 생성 (파일 없이 numpy array 전달)
-            skip_info = f" (frame_skip={frame_skip})" if frame_skip > 1 else ""
-            socketio.emit('status', {
-                'message': f'립싱크 생성 시작...{skip_info}',
-                'progress': 10,
-                'elapsed': time.time() - start_time
-            }, to=sid)
+    def worker():
+        global queue_worker_running
+        queue_worker_running = True
+        print("[Queue Worker] 시작")
 
-            output_video = lipsync_engine.generate_lipsync(
-                avatar_path,
-                (audio_numpy, sample_rate),  # numpy array 전달
-                output_dir="results/realtime",
-                sid=sid,  # WebSocket 세션 ID 전달
-                frame_skip=frame_skip,  # 프레임 스킵 적용
-                resolution=resolution  # 출력 해상도
-            )
+        while True:
+            # 다음 요청 가져오기
+            request_data = generation_queue.get_next()
+            if request_data is None:
+                break  # 큐가 비었으면 종료
 
-            if sid in client_sessions and client_sessions[sid]['cancelled']:
-                socketio.emit('cancelled', {'message': '생성이 취소되었습니다'}, to=sid)
-                return
+            sid = request_data.get('sid')
+            print(f"[Queue Worker] 처리 시작: {sid}")
 
-            if output_video:
-                elapsed = time.time() - start_time
-                socketio.emit('status', {'message': '완료!', 'progress': 100, 'elapsed': elapsed}, to=sid)
-                socketio.emit('complete', {
-                    'video_path': 'results/realtime/output_with_audio.mp4',
-                    'elapsed': elapsed
-                }, to=sid)
-            else:
-                socketio.emit('error', {'message': '립싱크 생성 실패'}, to=sid)
+            # 대기 중인 클라이언트들에게 순서 업데이트
+            broadcast_queue_update()
 
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            socketio.emit('error', {'message': str(e)}, to=sid)
-        finally:
-            # 생성 완료 표시
-            if sid in client_sessions:
-                client_sessions[sid]['generating'] = False
+            try:
+                process_generation_request(request_data)
+            except Exception as e:
+                print(f"[Queue Worker] 오류: {e}")
+                import traceback
+                traceback.print_exc()
+                socketio.emit('error', {'message': str(e)}, to=sid)
+            finally:
+                generation_queue.complete_current()
+                # 다시 대기 중인 클라이언트들에게 순서 업데이트
+                broadcast_queue_update()
 
-    thread = threading.Thread(target=generate_async, args=(client_sid,))
-    thread.start()
+        queue_worker_running = False
+        print("[Queue Worker] 종료")
 
-    return jsonify({"status": "started"})
+    queue_worker_thread = threading.Thread(target=worker, daemon=True)
+    queue_worker_thread.start()
+
+
+def broadcast_queue_update():
+    """대기 중인 모든 클라이언트에게 순서 업데이트 전송"""
+    status = generation_queue.get_status()
+    for i, item in enumerate(status['queue']):
+        position = i + 1
+        socketio.emit('queue_update', {
+            'position': position,
+            'message': f'대기열 {position}번째',
+            'request_id': item['request_id'],
+            'wait_time': item['wait_time']
+        }, to=item['sid'])
+
+
+def process_generation_request(request_data):
+    """실제 립싱크 생성 처리"""
+    global lipsync_engine
+
+    sid = request_data.get('sid')
+    avatar_path = request_data.get('avatar_path')
+    text = request_data.get('text')
+    tts_engine = request_data.get('tts_engine')
+    tts_voice = request_data.get('tts_voice')
+    frame_skip = request_data.get('frame_skip', 1)
+    resolution = request_data.get('resolution', '720p')
+
+    start_time = time.time()
+
+    # 취소 확인
+    if request_data.get('cancelled'):
+        socketio.emit('cancelled', {'message': '생성이 취소되었습니다'}, to=sid)
+        return
+
+    # 처리 시작 알림
+    socketio.emit('queue_update', {
+        'position': 0,
+        'message': '처리 중...',
+        'request_id': request_data.get('request_id')
+    }, to=sid)
+
+    # 1. TTS 생성
+    engine_name = TTS_ENGINES.get(tts_engine, {}).get('name', tts_engine)
+    socketio.emit('status', {'message': f'TTS 생성 중 ({engine_name})...', 'progress': 0, 'elapsed': 0}, to=sid)
+
+    tts_result = generate_tts_audio(text, tts_engine, tts_voice)
+
+    if tts_result is None:
+        socketio.emit('error', {'message': f'TTS 생성 실패 ({engine_name})'}, to=sid)
+        return
+
+    audio_numpy, sample_rate = tts_result
+
+    # 취소 확인
+    if request_data.get('cancelled'):
+        socketio.emit('cancelled', {'message': '생성이 취소되었습니다'}, to=sid)
+        return
+
+    # 2. 립싱크 생성
+    skip_info = f" (frame_skip={frame_skip})" if frame_skip > 1 else ""
+    socketio.emit('status', {
+        'message': f'립싱크 생성 시작...{skip_info}',
+        'progress': 10,
+        'elapsed': time.time() - start_time
+    }, to=sid)
+
+    output_video = lipsync_engine.generate_lipsync(
+        avatar_path,
+        (audio_numpy, sample_rate),
+        output_dir="results/realtime",
+        sid=sid,
+        frame_skip=frame_skip,
+        resolution=resolution
+    )
+
+    # 취소 확인
+    if request_data.get('cancelled'):
+        socketio.emit('cancelled', {'message': '생성이 취소되었습니다'}, to=sid)
+        return
+
+    if output_video:
+        elapsed = time.time() - start_time
+        socketio.emit('status', {'message': '완료!', 'progress': 100, 'elapsed': elapsed}, to=sid)
+        socketio.emit('complete', {
+            'video_path': 'results/realtime/output_with_audio.mp4',
+            'elapsed': elapsed
+        }, to=sid)
+    else:
+        socketio.emit('error', {'message': '립싱크 생성 실패'}, to=sid)
 
 
 @app.route('/api/cancel', methods=['POST'])
@@ -1523,8 +1720,18 @@ def api_cancel():
     data = request.json
     client_sid = data.get('sid') if data else None
 
-    if client_sid and client_sid in client_sessions:
-        client_sessions[client_sid]['cancelled'] = True
+    if client_sid:
+        # 큐에서 취소
+        removed = generation_queue.cancel_request(client_sid)
+
+        # 기존 세션에서도 취소 표시
+        if client_sid in client_sessions:
+            client_sessions[client_sid]['cancelled'] = True
+
+        return jsonify({
+            "status": "cancelled",
+            "removed_from_queue": removed
+        })
 
     return jsonify({"status": "cancelled"})
 

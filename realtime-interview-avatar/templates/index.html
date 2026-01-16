@@ -502,6 +502,59 @@
             background: rgba(76, 175, 80, 0.1);
         }
 
+        /* 큐 상태 표시 */
+        .queue-status {
+            display: none;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+            padding: 20px;
+            background: rgba(255, 152, 0, 0.15);
+            border: 1px solid rgba(255, 152, 0, 0.4);
+            border-radius: 16px;
+            margin-bottom: 20px;
+        }
+
+        .queue-status.visible {
+            display: flex;
+        }
+
+        .queue-position {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #ff9800;
+            min-width: 60px;
+            text-align: center;
+        }
+
+        .queue-info {
+            flex: 1;
+        }
+
+        .queue-message {
+            font-size: 1.1em;
+            color: #fff;
+            margin-bottom: 5px;
+        }
+
+        .queue-wait-time {
+            font-size: 0.9em;
+            color: #aaa;
+        }
+
+        .queue-spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(255, 152, 0, 0.3);
+            border-top-color: #ff9800;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
         @media (max-width: 768px) {
             .main-content {
                 grid-template-columns: 1fr;
@@ -615,6 +668,16 @@
                     <canvas id="streamCanvas"></canvas>
                     <video id="resultVideo" playsinline></video>
                     <audio id="streamAudio" style="display: none;"></audio>
+                </div>
+
+                <!-- 큐 상태 표시 -->
+                <div class="queue-status" id="queueStatus">
+                    <div class="queue-spinner"></div>
+                    <div class="queue-position" id="queuePosition">-</div>
+                    <div class="queue-info">
+                        <div class="queue-message" id="queueMessage">대기 중...</div>
+                        <div class="queue-wait-time" id="queueWaitTime"></div>
+                    </div>
                 </div>
 
                 <div class="progress-container" id="progressContainer" style="display: none;">
@@ -737,6 +800,33 @@
             console.log('Client SID:', clientSid);
         });
 
+        // 큐 상태 업데이트
+        socket.on('queue_update', (data) => {
+            const queueStatus = document.getElementById('queueStatus');
+            const queuePosition = document.getElementById('queuePosition');
+            const queueMessage = document.getElementById('queueMessage');
+            const queueWaitTime = document.getElementById('queueWaitTime');
+
+            if (data.position === 0) {
+                // 처리 중 - 큐 상태 숨기고 진행 상태 표시
+                queueStatus.classList.remove('visible');
+                document.getElementById('progressContainer').style.display = 'block';
+            } else if (data.position > 0) {
+                // 대기 중 - 큐 상태 표시
+                queueStatus.classList.add('visible');
+                queuePosition.textContent = data.position;
+                queueMessage.textContent = data.message || `대기열 ${data.position}번째`;
+
+                if (data.wait_time !== undefined) {
+                    queueWaitTime.textContent = `대기 시간: ${data.wait_time.toFixed(0)}초`;
+                } else {
+                    queueWaitTime.textContent = '';
+                }
+            }
+
+            console.log('Queue update:', data);
+        });
+
         socket.on('status', (data) => {
             document.getElementById('statusText').textContent = data.message;
             document.getElementById('progressFill').style.width = data.progress + '%';
@@ -751,6 +841,9 @@
         socket.on('complete', (data) => {
             isGenerating = false;
             updateUIState(false);
+
+            // 큐 상태 숨기기
+            document.getElementById('queueStatus').classList.remove('visible');
 
             if (data.total_time !== undefined) {
                 document.getElementById('elapsedTime').textContent = `완료: ${data.total_time.toFixed(1)}초`;
@@ -815,6 +908,7 @@
         socket.on('error', (data) => {
             isGenerating = false;
             updateUIState(false);
+            document.getElementById('queueStatus').classList.remove('visible');
             document.getElementById('statusText').textContent = '오류: ' + data.message;
             addMessage('system', '오류가 발생했습니다: ' + data.message);
         });
@@ -822,6 +916,7 @@
         socket.on('cancelled', (data) => {
             isGenerating = false;
             updateUIState(false);
+            document.getElementById('queueStatus').classList.remove('visible');
             document.getElementById('statusText').textContent = data.message;
         });
 
