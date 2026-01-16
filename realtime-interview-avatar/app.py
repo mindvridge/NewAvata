@@ -313,7 +313,7 @@ class LipsyncEngine:
         self.loaded = True
         return True
 
-    def generate_lipsync(self, precomputed_path, audio_input, output_dir="results/realtime", fps=25, sid=None, preloaded_data=None):
+    def generate_lipsync(self, precomputed_path, audio_input, output_dir="results/realtime", fps=25, sid=None, preloaded_data=None, frame_skip=1):
         """
         프리컴퓨트된 아바타로 립싱크 생성 (배치 처리 + 공식 MuseTalk 블렌딩)
 
@@ -324,6 +324,7 @@ class LipsyncEngine:
             fps: FPS (프리컴퓨트 데이터에서 자동 가져옴)
             sid: WebSocket 세션 ID (진행률 업데이트용)
             preloaded_data: 미리 로드된 프리컴퓨트 데이터 (병렬 처리용)
+            frame_skip: 프레임 스킵 간격 (1=스킵없음, 2=2프레임당1추론, 3=3프레임당1추론)
         """
         import torch
         import copy
@@ -442,31 +443,50 @@ class LipsyncEngine:
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
-        # latent 리스트를 whisper_chunks 길이에 맞게 순환 확장
+        # 프레임 스킵 설정 (1=스킵없음, 2=절반 추론, 3=1/3 추론)
+        frame_skip = max(1, min(frame_skip, 3))  # 1~3 사이로 제한
+
+        # 스킵 적용: 추론할 프레임 인덱스 계산
+        if frame_skip > 1:
+            # 추론할 프레임 인덱스 (0, skip, 2*skip, ...)
+            inference_indices = list(range(0, num_frames, frame_skip))
+            # 마지막 프레임이 포함되지 않았으면 추가 (보간 품질 향상)
+            if inference_indices[-1] != num_frames - 1:
+                inference_indices.append(num_frames - 1)
+            actual_inference_frames = len(inference_indices)
+            print(f"[프레임 스킵] 전체 {num_frames}프레임 중 {actual_inference_frames}프레임만 추론 (skip={frame_skip})")
+        else:
+            inference_indices = list(range(num_frames))
+            actual_inference_frames = num_frames
+
+        # latent 리스트를 whisper_chunks 길이에 맞게 순환 확장 (추론할 프레임만)
         # CPU에서 로드된 latent를 GPU로 이동
         extended_latent_list = []
-        for i in range(num_frames):
+        selected_whisper_chunks = []
+        for i in inference_indices:
             idx = i % len(input_latent_list)
             latent = input_latent_list[idx]
             # CPU 텐서를 GPU로 이동
             if isinstance(latent, torch.Tensor):
                 latent = latent.to(self.device, dtype=self.weight_dtype)
             extended_latent_list.append(latent)
+            selected_whisper_chunks.append(whisper_chunks[i])
 
         # 배치 처리를 위한 datagen 사용
         t0 = time.time()
-        print(f"UNet 추론 시작 (batch_size={batch_size})...")
+        skip_info = f", skip={frame_skip}" if frame_skip > 1 else ""
+        print(f"UNet 추론 시작 (batch_size={batch_size}{skip_info})...")
         if sid:
             emit_kwargs = {
-                'message': f'UNet 추론 준비 중... (배치 크기: {batch_size})',
+                'message': f'UNet 추론 준비 중... (배치 크기: {batch_size}{skip_info})',
                 'progress': 18,
                 'elapsed': time.time() - start_time
             }
             socketio.emit('status', emit_kwargs, to=sid)
-        
+
         try:
             gen = datagen(
-                whisper_chunks=whisper_chunks,
+                whisper_chunks=selected_whisper_chunks,
                 vae_encode_latents=extended_latent_list,
                 batch_size=batch_size,
                 delay_frame=0,
@@ -478,8 +498,8 @@ class LipsyncEngine:
             traceback.print_exc()
             raise
 
-        res_frame_list = []
-        total_batches = int(np.ceil(float(num_frames) / batch_size))
+        inference_frame_list = []  # 추론된 프레임들 (스킵된 경우 일부만)
+        total_batches = int(np.ceil(float(actual_inference_frames) / batch_size))
 
         # CUDA 최적화: inference_mode 사용 (더 빠름)
         engine_name = "TensorRT" if self.use_tensorrt else "PyTorch"
@@ -506,14 +526,14 @@ class LipsyncEngine:
 
                 # 배치 VAE 디코딩
                 recon_frames = self.vae.decode_latents(pred_latents)
-                res_frame_list.extend(recon_frames)  # extend 사용 (더 빠름)
+                inference_frame_list.extend(recon_frames)  # extend 사용 (더 빠름)
 
                 # 진행률 전송 (주기적으로 - 매 5배치마다 또는 마지막 배치)
                 if (batch_idx + 1) % 5 == 0 or (batch_idx + 1) == total_batches:
                     progress = 10 + int((batch_idx + 1) / total_batches * 60)  # 10~70%
                     elapsed = time.time() - start_time
                     emit_kwargs = {
-                        'message': f'UNet 추론 중 ({engine_name})... {min((batch_idx+1)*batch_size, num_frames)}/{num_frames}',
+                        'message': f'UNet 추론 중 ({engine_name})... {min((batch_idx+1)*batch_size, actual_inference_frames)}/{actual_inference_frames}',
                         'progress': progress,
                         'elapsed': elapsed
                     }
@@ -521,12 +541,44 @@ class LipsyncEngine:
                         socketio.emit('status', emit_kwargs, to=sid)
                     else:
                         socketio.emit('status', emit_kwargs)
-                    
+
                 # 디버그 로그 출력 (매 10배치마다)
                 if (batch_idx + 1) % 10 == 0:
                     print(f"  [{batch_idx+1}/{total_batches}] 배치 처리 중... ({int((batch_idx+1)/total_batches*100)}%)")
 
         timings['unet_inference'] = time.time() - t0
+
+        # 프레임 보간 (스킵된 프레임 복원)
+        if frame_skip > 1:
+            t0_interp = time.time()
+            print(f"[프레임 보간] {actual_inference_frames}프레임 -> {num_frames}프레임...")
+            res_frame_list = [None] * num_frames
+
+            # 추론된 프레임 배치
+            for idx, frame_idx in enumerate(inference_indices):
+                res_frame_list[frame_idx] = inference_frame_list[idx]
+
+            # 중간 프레임 보간 (선형 보간)
+            for i in range(len(inference_indices) - 1):
+                start_idx = inference_indices[i]
+                end_idx = inference_indices[i + 1]
+                start_frame = res_frame_list[start_idx]
+                end_frame = res_frame_list[end_idx]
+
+                # 중간 프레임들 보간
+                for j in range(start_idx + 1, end_idx):
+                    alpha = (j - start_idx) / (end_idx - start_idx)
+                    # 선형 보간 (빠름)
+                    interpolated = cv2.addWeighted(
+                        start_frame.astype(np.float32), 1.0 - alpha,
+                        end_frame.astype(np.float32), alpha, 0
+                    ).astype(np.uint8)
+                    res_frame_list[j] = interpolated
+
+            timings['frame_interpolation'] = time.time() - t0_interp
+            print(f"  프레임 보간 완료: {timings['frame_interpolation']:.2f}초")
+        else:
+            res_frame_list = inference_frame_list
 
         # GPU 메모리 정리
         torch.cuda.empty_cache()
@@ -930,6 +982,7 @@ def api_generate():
     tts_engine = data.get('tts_engine', DEFAULT_TTS_ENGINE)
     tts_voice = data.get('tts_voice', DEFAULT_TTS_VOICE)
     client_sid = data.get('sid')  # 클라이언트 SID
+    frame_skip = data.get('frame_skip', 1)  # 프레임 스킵 (1=없음, 2=절반추론, 3=1/3추론)
 
     if not avatar_path:
         return jsonify({"error": "avatar_path가 필요합니다"}), 400
@@ -981,8 +1034,9 @@ def api_generate():
                 return
 
             # 2. 립싱크 생성 (파일 없이 numpy array 전달)
+            skip_info = f" (frame_skip={frame_skip})" if frame_skip > 1 else ""
             socketio.emit('status', {
-                'message': '립싱크 생성 시작...',
+                'message': f'립싱크 생성 시작...{skip_info}',
                 'progress': 10,
                 'elapsed': time.time() - start_time
             }, to=sid)
@@ -991,7 +1045,8 @@ def api_generate():
                 avatar_path,
                 (audio_numpy, sample_rate),  # numpy array 전달
                 output_dir="results/realtime",
-                sid=sid  # WebSocket 세션 ID 전달
+                sid=sid,  # WebSocket 세션 ID 전달
+                frame_skip=frame_skip  # 프레임 스킵 적용
             )
 
             if sid in client_sessions and client_sessions[sid]['cancelled']:
@@ -1268,6 +1323,7 @@ def api_v2_lipsync():
     avatar_path = data.get('avatar_path', '')
     tts_engine = data.get('tts_engine', DEFAULT_TTS_ENGINE)
     tts_voice = data.get('tts_voice', DEFAULT_TTS_VOICE)
+    frame_skip = data.get('frame_skip', 1)  # 프레임 스킵 (1=없음, 2=절반추론, 3=1/3추론)
 
     # 아바타 경로 결정
     if not avatar_path and avatar:
@@ -1314,12 +1370,13 @@ def api_v2_lipsync():
         if not precomputed_data:
             return jsonify({"success": False, "error": "프리컴퓨트 로드 실패"}), 500
 
-        # 립싱크 생성 (프리컴퓨트 데이터 전달)
+        # 립싱크 생성 (프리컴퓨트 데이터 전달 + 프레임 스킵)
         output_video = lipsync_engine.generate_lipsync(
             avatar_path,
             str(tts_output),
             output_dir="results/realtime",
-            preloaded_data=precomputed_data  # 미리 로드된 데이터 전달
+            preloaded_data=precomputed_data,  # 미리 로드된 데이터 전달
+            frame_skip=frame_skip  # 프레임 스킵 적용
         )
 
         if output_video:
@@ -1371,6 +1428,7 @@ def api_v2_chat_and_lipsync():
     avatar_path = data.get('avatar_path', '')
     tts_engine = data.get('tts_engine', DEFAULT_TTS_ENGINE)
     tts_voice = data.get('tts_voice', DEFAULT_TTS_VOICE)
+    frame_skip = data.get('frame_skip', 1)  # 프레임 스킵 (1=없음, 2=절반추론, 3=1/3추론)
 
     if not message:
         return jsonify({"success": False, "error": "message가 필요합니다"}), 400
@@ -1477,11 +1535,12 @@ def api_v2_chat_and_lipsync():
                 "error": "TTS 생성 실패"
             }), 500
 
-        # 3. 립싱크 생성
+        # 3. 립싱크 생성 (프레임 스킵 적용)
         output_video = lipsync_engine.generate_lipsync(
             avatar_path,
             str(tts_output),
-            output_dir="results/realtime"
+            output_dir="results/realtime",
+            frame_skip=frame_skip
         )
 
         elapsed = time.time() - start_time
@@ -1544,6 +1603,7 @@ def api_generate_streaming():
     tts_engine = data.get('tts_engine', DEFAULT_TTS_ENGINE)
     tts_voice = data.get('tts_voice', DEFAULT_TTS_VOICE)
     client_sid = data.get('sid')  # 클라이언트 SID
+    frame_skip = data.get('frame_skip', 1)  # 프레임 스킵 (1=없음, 2=절반추론, 3=1/3추론)
 
     if not avatar_path:
         return jsonify({"error": "avatar_path가 필요합니다"}), 400
@@ -1592,8 +1652,9 @@ def api_generate_streaming():
                 return
 
             # 2. 립싱크 생성 (파일 없이 numpy array 전달)
+            skip_info = f" (frame_skip={frame_skip})" if frame_skip > 1 else ""
             socketio.emit('status', {
-                'message': '립싱크 생성 시작...',
+                'message': f'립싱크 생성 시작...{skip_info}',
                 'progress': 10,
                 'elapsed': time.time() - start_time
             }, to=sid)
@@ -1602,7 +1663,8 @@ def api_generate_streaming():
                 avatar_path,
                 (audio_numpy, sample_rate),  # numpy array 전달
                 output_dir="results/realtime",
-                sid=sid  # WebSocket 세션 ID 전달
+                sid=sid,  # WebSocket 세션 ID 전달
+                frame_skip=frame_skip  # 프레임 스킵 적용
             )
 
             if sid in client_sessions and client_sessions[sid]['cancelled']:
