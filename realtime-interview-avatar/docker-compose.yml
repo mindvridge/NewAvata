@@ -1,15 +1,14 @@
 # ============================================================================
 # Docker Compose for Realtime Interview Avatar System
-# MuseTalk V1.5 + CosyVoice 2.0 TTS
+# MuseTalk V1.5 + ElevenLabs TTS + TensorRT/ONNX 최적화
 # ============================================================================
 #
 # 사용법:
-#   1. .env 파일 생성: cp .env.example .env
-#   2. .env 파일에 OPENAI_API_KEY 설정
-#   3. 빌드: docker-compose build
-#   4. 실행: docker-compose up -d
-#   5. 로그: docker-compose logs -f
-#   6. 중지: docker-compose down
+#   1. start_docker.bat 더블클릭 (빌드 + 실행)
+#   또는:
+#   1. docker-compose build
+#   2. docker-compose up -d
+#   3. http://localhost:5000 접속
 #
 # ============================================================================
 
@@ -24,7 +23,7 @@ services:
     container_name: avatar-server
     restart: unless-stopped
 
-    # GPU 지원 (RTX 50 시리즈 - CUDA 12.4, PyTorch 2.5.1)
+    # GPU 지원 (RTX 50 시리즈 - CUDA 12.4, PyTorch nightly cu129)
     deploy:
       resources:
         reservations:
@@ -39,22 +38,24 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CUDA_VISIBLE_DEVICES=0
+      # API Keys (from .env)
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - COSYVOICE_MODEL_PATH=/app/CosyVoice/pretrained_models/CosyVoice2-0.5B
+      - LLM_API_URL=${LLM_API_URL:-}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      # Model paths
       - MUSETALK_PATH=/app/MuseTalk
-      - COSYVOICE_PATH=/app/CosyVoice
-      # torchaudio backend 설정 (torchcodec 대신 soundfile 사용)
-      - TORCHAUDIO_USE_BACKEND_DISPATCHER=0
-      # PyTorch CUDA 12.9 라이브러리 경로 (RTX 5060 Ti sm_120 지원)
+      # TensorRT/ONNX optimization
+      - ENABLE_TENSORRT=${ENABLE_TENSORRT:-true}
+      - PRECISION_MODE=${PRECISION_MODE:-fp16}
+      # PyTorch CUDA library paths
       - LD_LIBRARY_PATH=/usr/local/lib/python3.10/dist-packages/nvidia/nvjitlink/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cublas/lib:/usr/local/lib/python3.10/dist-packages/nvidia/cudnn/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64
 
     volumes:
-      # MuseTalk 모델 (필수)
-      - ./models:/app/realtime-interview-avatar/models:ro
+      # MuseTalk 모델 (필수) - TensorRT 캐시 저장을 위해 쓰기 허용
+      - ./models:/app/realtime-interview-avatar/models
       - ../MuseTalk/models:/app/MuseTalk/models:ro
-
-      # CosyVoice 모델 (필수)
-      - ../CosyVoice/pretrained_models:/app/CosyVoice/pretrained_models:ro
 
       # 사전계산 아바타 (필수)
       - ./precomputed:/app/realtime-interview-avatar/precomputed:ro

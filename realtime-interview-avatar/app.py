@@ -5,6 +5,20 @@ Flask + WebSocket 기반 + 모델 프리로드
 
 import os
 import sys
+
+# TensorRT DLL 경로 추가 (Windows에서 ONNX Runtime TensorRT Provider 사용을 위해)
+if sys.platform == 'win32':
+    # TensorRT libs 경로
+    trt_libs_path = os.path.join(os.path.dirname(__file__), 'venv', 'Lib', 'site-packages', 'tensorrt_libs')
+    if os.path.exists(trt_libs_path):
+        os.add_dll_directory(trt_libs_path)
+        os.environ['PATH'] = trt_libs_path + os.pathsep + os.environ.get('PATH', '')
+
+    # CUDA runtime 경로 (nvidia-cuda-runtime 패키지)
+    cuda_runtime_path = os.path.join(os.path.dirname(__file__), 'venv', 'Lib', 'site-packages', 'nvidia', 'cuda_runtime', 'bin')
+    if os.path.exists(cuda_runtime_path):
+        os.add_dll_directory(cuda_runtime_path)
+        os.environ['PATH'] = cuda_runtime_path + os.pathsep + os.environ.get('PATH', '')
 import time
 import json
 import base64
@@ -50,12 +64,14 @@ generation_lock = threading.Lock()  # 동시 생성 방지 락
 
 
 class LipsyncEngine:
-    """립싱크 엔진 - 모델 프리로드 및 추론"""
+    """립싱크 엔진 - 모델 프리로드 및 추론 (TensorRT 지원)"""
 
     def __init__(self):
         self.device = None
         self.vae = None
         self.unet = None
+        self.unet_trt = None  # TensorRT 엔진
+        self.use_tensorrt = False  # TensorRT 사용 여부
         self.pe = None
         self.whisper = None
         self.audio_processor = None
@@ -63,7 +79,79 @@ class LipsyncEngine:
         self.weight_dtype = None
         self.loaded = False
 
-    def load_models(self, use_float16=True):
+    def load_onnx_tensorrt(self, onnx_path: str, use_fp16: bool = True):
+        """ONNX Runtime TensorRT EP 로드"""
+        try:
+            import onnxruntime as ort
+
+            print(f"  ONNX TensorRT 로드 중: {onnx_path}")
+
+            # TensorRT EP 설정
+            providers = [
+                ('TensorrtExecutionProvider', {
+                    'device_id': 0,
+                    'trt_max_workspace_size': 4 * 1024 * 1024 * 1024,  # 4GB
+                    'trt_fp16_enable': use_fp16,
+                    'trt_engine_cache_enable': True,
+                    'trt_engine_cache_path': os.path.dirname(onnx_path),
+                }),
+                ('CUDAExecutionProvider', {
+                    'device_id': 0,
+                }),
+            ]
+
+            # 세션 생성 (첫 실행시 TensorRT 엔진 빌드)
+            print("  세션 생성 중 (첫 실행시 TensorRT 엔진 빌드, 수 분 소요)...")
+            session = ort.InferenceSession(onnx_path, providers=providers)
+
+            active_provider = session.get_providers()[0]
+            print(f"  활성 Provider: {active_provider}")
+
+            # ONNX Runtime UNet 래퍼 클래스
+            class ONNXRuntimeUNet:
+                def __init__(self, session, use_fp16):
+                    self.session = session
+                    self.use_fp16 = use_fp16
+
+                def __call__(self, latent, timestep, encoder_hidden_states):
+                    """ONNX Runtime 추론 실행"""
+                    import torch
+
+                    # PyTorch -> NumPy
+                    dtype = np.float16 if self.use_fp16 else np.float32
+                    latent_np = latent.cpu().numpy().astype(dtype)
+                    timestep_np = timestep.cpu().numpy().astype(np.int64)
+                    encoder_np = encoder_hidden_states.cpu().numpy().astype(dtype)
+
+                    # 추론 실행
+                    output = self.session.run(None, {
+                        'latent': latent_np,
+                        'timestep': timestep_np,
+                        'encoder_hidden_states': encoder_np
+                    })
+
+                    # NumPy -> PyTorch
+                    output_tensor = torch.from_numpy(output[0]).to(latent.device)
+
+                    # diffusers 형식에 맞게 래핑
+                    class UNetOutput:
+                        def __init__(self, sample):
+                            self.sample = sample
+
+                    return UNetOutput(output_tensor)
+
+            self.unet_trt = ONNXRuntimeUNet(session, use_fp16)
+            self.use_tensorrt = True
+            print("  ONNX TensorRT 로드 완료!")
+            return True
+
+        except Exception as e:
+            print(f"  ONNX TensorRT 로드 실패: {e}")
+            print("  PyTorch 모델을 사용합니다.")
+            self.use_tensorrt = False
+            return False
+
+    def load_models(self, use_float16=True, use_tensorrt=True):
         """모델 로드 (서버 시작시 1회)"""
         import torch
         from musetalk.utils.blending import get_image_blending
@@ -84,32 +172,40 @@ class LipsyncEngine:
         self.weight_dtype = torch.float16 if use_float16 else torch.float32
 
         # VAE 로드
-        print("  [1/4] VAE 로드 중...")
+        print("  [1/5] VAE 로드 중...")
         self.vae = VAE(model_path="./models/sd-vae", use_float16=use_float16)
         if use_float16:
             self.vae.vae = self.vae.vae.half()
         self.vae.vae = self.vae.vae.to(self.device)
 
-        # UNet 로드
-        print("  [2/4] UNet 로드 중...")
-        self.unet = UNet(
-            unet_config="./models/musetalkV15/musetalk.json",
-            model_path="./models/musetalkV15/unet.pth",
-            device=self.device
-        )
-        if use_float16:
-            self.unet.model = self.unet.model.half()
-        self.unet.model = self.unet.model.to(self.device)
+        # UNet 로드 (ONNX TensorRT 또는 PyTorch)
+        onnx_path = "./models/musetalkV15/unet_fp16.onnx"
+        trt_loaded = False
+
+        if use_tensorrt and os.path.exists(onnx_path):
+            print("  [2/5] UNet ONNX TensorRT 로드 중...")
+            trt_loaded = self.load_onnx_tensorrt(onnx_path, use_fp16=use_float16)
+
+        if not trt_loaded:
+            print("  [2/5] UNet PyTorch 로드 중...")
+            self.unet = UNet(
+                unet_config="./models/musetalkV15/musetalk.json",
+                model_path="./models/musetalkV15/unet.pth",
+                device=self.device
+            )
+            if use_float16:
+                self.unet.model = self.unet.model.half()
+            self.unet.model = self.unet.model.to(self.device)
 
         # PE 로드
-        print("  [3/4] Positional Encoding 로드 중...")
+        print("  [3/5] Positional Encoding 로드 중...")
         self.pe = PositionalEncoding(d_model=384)
         self.pe = self.pe.to(self.device)
         if use_float16:
             self.pe = self.pe.half()
 
         # Whisper 로드
-        print("  [4/4] Whisper 로드 중...")
+        print("  [4/5] Whisper 로드 중...")
         self.whisper = WhisperModel.from_pretrained("openai/whisper-tiny")
         self.whisper = self.whisper.to(self.device)
         if use_float16:
@@ -123,24 +219,79 @@ class LipsyncEngine:
         self.timesteps = torch.tensor([0], device=self.device)
 
         # CUDA 워밍업 (전체 파이프라인)
-        print("  CUDA 워밍업 중...")
+        print("  [5/5] CUDA 워밍업 중...")
         with torch.inference_mode():
-            # 1. VAE 워밍업
-            dummy_latent = torch.randn(1, 4, 64, 64).to(self.device, dtype=self.weight_dtype)
+            # 1. VAE 워밍업 (32x32 latent -> 256x256 이미지)
+            dummy_latent = torch.randn(1, 4, 32, 32).to(self.device, dtype=self.weight_dtype)
             _ = self.vae.decode_latents(dummy_latent)
 
-            # 2. UNet 워밍업 (배치 크기 32로)
-            dummy_latent_batch = torch.randn(32, 8, 64, 64).to(self.device, dtype=self.unet.model.dtype)
-            dummy_audio = torch.randn(32, 50, 384).to(self.device, dtype=self.weight_dtype)
-            dummy_audio_feature = self.pe(dummy_audio)
-            _ = self.unet.model(
-                dummy_latent_batch,
-                self.timesteps,
-                encoder_hidden_states=dummy_audio_feature
-            ).sample
+            # 2. UNet 워밍업 (모든 배치 크기에 대해 TensorRT 엔진 빌드)
+            # TensorRT는 동적 배치에서 각 배치 크기별로 엔진을 빌드하므로
+            # 자주 사용되는 배치 크기들을 미리 워밍업
+            if self.use_tensorrt:
+                warmup_batch_sizes = [32, 16, 8, 4, 2, 1]  # 자주 사용되는 배치 크기들
+                print(f"    TensorRT 엔진 워밍업 (배치: {warmup_batch_sizes})...")
+                for batch_size in warmup_batch_sizes:
+                    dummy_latent_batch = torch.randn(batch_size, 8, 32, 32).to(self.device, dtype=self.weight_dtype)
+                    dummy_audio = torch.randn(batch_size, 50, 384).to(self.device, dtype=self.weight_dtype)
+                    dummy_audio_feature = self.pe(dummy_audio)
+                    _ = self.unet_trt(
+                        dummy_latent_batch,
+                        self.timesteps,
+                        dummy_audio_feature
+                    ).sample
+                    del dummy_latent_batch, dummy_audio, dummy_audio_feature
+                    print(f"      배치 {batch_size}: 완료")
+            else:
+                dummy_latent_batch = torch.randn(16, 8, 32, 32).to(self.device, dtype=self.weight_dtype)
+                dummy_audio = torch.randn(16, 50, 384).to(self.device, dtype=self.weight_dtype)
+                dummy_audio_feature = self.pe(dummy_audio)
+                _ = self.unet.model(
+                    dummy_latent_batch,
+                    self.timesteps,
+                    encoder_hidden_states=dummy_audio_feature
+                ).sample
+                del dummy_latent_batch, dummy_audio, dummy_audio_feature
 
-            # 3. 메모리 정리
-            del dummy_latent, dummy_latent_batch, dummy_audio, dummy_audio_feature
+            # 3. Whisper 워밍업 (첫 실행 시 feature_extractor + CUDA 커널 컴파일 방지)
+            print("    Whisper 워밍업...")
+            import numpy as np
+            # Feature extractor 첫 호출 워밍업 (mel 스펙트로그램 FFT 컴파일)
+            # 30초 세그먼트 처리를 위해 실제와 유사한 길이의 오디오 사용
+            for audio_len in [16000, 32000]:  # 1초, 2초
+                dummy_audio_np = np.random.randn(audio_len).astype(np.float32)
+                whisper_features, librosa_len = self.audio_processor.get_audio_feature((dummy_audio_np, 16000))
+                # get_whisper_chunk에서 실제 Whisper 모델 실행
+                _ = self.audio_processor.get_whisper_chunk(
+                    whisper_features,
+                    self.device,
+                    self.weight_dtype,
+                    self.whisper,
+                    librosa_len,
+                    fps=25,
+                    audio_padding_length_left=2,
+                    audio_padding_length_right=2,
+                )
+            print("      Whisper: 완료")
+
+            # 4. librosa 워밍업 (파일 경로 모드에서 첫 호출 시 JIT 컴파일 방지)
+            print("    librosa 워밍업...")
+            import librosa
+            import tempfile
+            import soundfile as sf
+            # 더미 오디오 파일 생성 후 librosa.load로 읽기
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
+                dummy_path = f.name
+                sf.write(dummy_path, np.random.randn(16000).astype(np.float32), 16000)
+            # librosa 내부 초기화 (soxr resampler, numba JIT 등)
+            _ = librosa.load(dummy_path, sr=16000)
+            # os는 파일 상단에서 이미 import됨
+            if os.path.exists(dummy_path):
+                os.remove(dummy_path)
+            print("      librosa: 완료")
+
+            # 5. 메모리 정리
+            del dummy_latent
             torch.cuda.empty_cache()
 
         # FaceParsing 미리 초기화
@@ -153,13 +304,15 @@ class LipsyncEngine:
             )
 
         elapsed = time.time() - start_time
+        engine_type = "TensorRT" if self.use_tensorrt else "PyTorch"
         print(f"\n모델 프리로드 완료! ({elapsed:.1f}초)")
+        print(f"UNet 엔진: {engine_type}")
         print("=" * 50)
 
         self.loaded = True
         return True
 
-    def generate_lipsync(self, precomputed_path, audio_input, output_dir="results/realtime", fps=25):
+    def generate_lipsync(self, precomputed_path, audio_input, output_dir="results/realtime", fps=25, sid=None):
         """
         프리컴퓨트된 아바타로 립싱크 생성 (배치 처리 + 공식 MuseTalk 블렌딩)
 
@@ -168,6 +321,7 @@ class LipsyncEngine:
             audio_input: 오디오 파일 경로(str) 또는 (audio_numpy, sample_rate) 튜플
             output_dir: 출력 디렉토리
             fps: FPS (프리컴퓨트 데이터에서 자동 가져옴)
+            sid: WebSocket 세션 ID (진행률 업데이트용)
         """
         import torch
         import copy
@@ -179,24 +333,73 @@ class LipsyncEngine:
             raise RuntimeError("모델이 로드되지 않았습니다")
 
         start_time = time.time()
-        batch_size = 16  # 배치 크기 (가이드 권장값)
+        timings = {}  # 상세 타이밍 기록
+        batch_size = 32  # 배치 크기 증가 (GPU 활용도 향상)
 
         # 프리컴퓨트 데이터 로드
-        with open(precomputed_path, 'rb') as f:
-            precomputed = pickle.load(f)
+        t0 = time.time()
+        print(f"프리컴퓨트 데이터 로드 중: {precomputed_path}")
+        if sid:
+            emit_kwargs = {
+                'message': '프리컴퓨트 데이터 로드 중...',
+                'progress': 11,
+                'elapsed': time.time() - start_time
+            }
+            socketio.emit('status', emit_kwargs, to=sid)
+        
+        try:
+            with open(precomputed_path, 'rb') as f:
+                precomputed = pickle.load(f)
+        except FileNotFoundError:
+            error_msg = f"프리컴퓨트 파일을 찾을 수 없습니다: {precomputed_path}"
+            print(f"[ERROR] {error_msg}")
+            raise FileNotFoundError(error_msg)
+        except Exception as e:
+            error_msg = f"프리컴퓨트 데이터 로드 실패: {e}"
+            print(f"[ERROR] {error_msg}")
+            import traceback
+            traceback.print_exc()
+            raise
 
         # 프리컴퓨트 데이터 키 매핑 (새 형식 지원)
         coords_list = precomputed.get('coords_list', precomputed.get('coord_list_cycle'))
         frames_list = precomputed.get('frames', precomputed.get('frame_list_cycle'))
         input_latent_list = precomputed.get('input_latent_list', precomputed.get('input_latent_list_cycle'))
+        
+        # 필수 데이터 확인
+        if not coords_list or not frames_list or not input_latent_list:
+            error_msg = "프리컴퓨트 데이터에 필수 키가 없습니다. coords_list, frames, input_latent_list가 필요합니다."
+            print(f"[ERROR] {error_msg}")
+            raise ValueError(error_msg)
 
         # FPS 가져오기
         fps = precomputed.get('fps', 25)
         extra_margin = 10  # V1.5 bbox 하단 확장
 
+        timings['precompute_load'] = time.time() - t0
+
         # 오디오 처리 (파일 경로 또는 numpy array)
+        t0 = time.time()
         print("오디오 whisper 특징 추출 중...")
-        whisper_input_features, librosa_length = self.audio_processor.get_audio_feature(audio_input)
+        if sid:
+            emit_kwargs = {
+                'message': '오디오 특징 추출 중...',
+                'progress': 12,
+                'elapsed': time.time() - start_time
+            }
+            socketio.emit('status', emit_kwargs, to=sid)
+        
+        try:
+            t_audio = time.time()
+            whisper_input_features, librosa_length = self.audio_processor.get_audio_feature(audio_input)
+            t_audio_done = time.time()
+            print(f"  - get_audio_feature: {t_audio_done - t_audio:.2f}초")
+        except Exception as e:
+            print(f"[ERROR] 오디오 특징 추출 실패: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+        t_chunk = time.time()
         whisper_chunks = self.audio_processor.get_whisper_chunk(
             whisper_input_features,
             self.device,
@@ -207,9 +410,23 @@ class LipsyncEngine:
             audio_padding_length_left=2,
             audio_padding_length_right=2,
         )
+        print(f"  - get_whisper_chunk: {time.time() - t_chunk:.2f}초")
+
+        timings['whisper_feature'] = time.time() - t0
 
         num_frames = len(whisper_chunks)
         print(f"생성할 프레임 수: {num_frames}")
+        
+        if num_frames == 0:
+            raise ValueError("오디오에서 프레임을 생성할 수 없습니다. 오디오 파일이 너무 짧거나 손상되었을 수 있습니다.")
+        
+        if sid:
+            emit_kwargs = {
+                'message': f'프레임 준비 완료: {num_frames}개',
+                'progress': 15,
+                'elapsed': time.time() - start_time
+            }
+            socketio.emit('status', emit_kwargs, to=sid)
 
         # 출력 디렉토리 생성
         output_path = Path(output_dir)
@@ -227,49 +444,85 @@ class LipsyncEngine:
             extended_latent_list.append(latent)
 
         # 배치 처리를 위한 datagen 사용
+        t0 = time.time()
         print(f"UNet 추론 시작 (batch_size={batch_size})...")
-        gen = datagen(
-            whisper_chunks=whisper_chunks,
-            vae_encode_latents=extended_latent_list,
-            batch_size=batch_size,
-            delay_frame=0,
-            device=self.device,
-        )
+        if sid:
+            emit_kwargs = {
+                'message': f'UNet 추론 준비 중... (배치 크기: {batch_size})',
+                'progress': 18,
+                'elapsed': time.time() - start_time
+            }
+            socketio.emit('status', emit_kwargs, to=sid)
+        
+        try:
+            gen = datagen(
+                whisper_chunks=whisper_chunks,
+                vae_encode_latents=extended_latent_list,
+                batch_size=batch_size,
+                delay_frame=0,
+                device=self.device,
+            )
+        except Exception as e:
+            print(f"[ERROR] datagen 생성 실패: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
 
         res_frame_list = []
         total_batches = int(np.ceil(float(num_frames) / batch_size))
 
         # CUDA 최적화: inference_mode 사용 (더 빠름)
+        engine_name = "TensorRT" if self.use_tensorrt else "PyTorch"
         with torch.inference_mode():
-            for batch_idx, (whisper_batch, latent_batch) in enumerate(tqdm(gen, total=total_batches, desc="UNet 추론")):
+            for batch_idx, (whisper_batch, latent_batch) in enumerate(tqdm(gen, total=total_batches, desc=f"UNet 추론 ({engine_name})")):
                 # PE 적용
                 audio_feature_batch = self.pe(whisper_batch)
-                latent_batch = latent_batch.to(dtype=self.unet.model.dtype)
 
-                # 배치 UNet 추론
-                pred_latents = self.unet.model(
-                    latent_batch,
-                    self.timesteps,
-                    encoder_hidden_states=audio_feature_batch
-                ).sample
+                # 배치 UNet 추론 (TensorRT 또는 PyTorch)
+                if self.use_tensorrt:
+                    latent_batch = latent_batch.to(dtype=self.weight_dtype)
+                    pred_latents = self.unet_trt(
+                        latent_batch,
+                        self.timesteps,
+                        audio_feature_batch
+                    ).sample
+                else:
+                    latent_batch = latent_batch.to(dtype=self.unet.model.dtype)
+                    pred_latents = self.unet.model(
+                        latent_batch,
+                        self.timesteps,
+                        encoder_hidden_states=audio_feature_batch
+                    ).sample
 
                 # 배치 VAE 디코딩
                 recon_frames = self.vae.decode_latents(pred_latents)
                 res_frame_list.extend(recon_frames)  # extend 사용 (더 빠름)
 
-                # 진행률 전송
-                progress = int((batch_idx + 1) / total_batches * 50)
-                elapsed = time.time() - start_time
-                socketio.emit('status', {
-                    'message': f'UNet 추론 중... {min((batch_idx+1)*batch_size, num_frames)}/{num_frames}',
-                    'progress': progress,
-                    'elapsed': elapsed
-                })
+                # 진행률 전송 (주기적으로 - 매 5배치마다 또는 마지막 배치)
+                if (batch_idx + 1) % 5 == 0 or (batch_idx + 1) == total_batches:
+                    progress = 10 + int((batch_idx + 1) / total_batches * 60)  # 10~70%
+                    elapsed = time.time() - start_time
+                    emit_kwargs = {
+                        'message': f'UNet 추론 중 ({engine_name})... {min((batch_idx+1)*batch_size, num_frames)}/{num_frames}',
+                        'progress': progress,
+                        'elapsed': elapsed
+                    }
+                    if sid:
+                        socketio.emit('status', emit_kwargs, to=sid)
+                    else:
+                        socketio.emit('status', emit_kwargs)
+                    
+                # 디버그 로그 출력 (매 10배치마다)
+                if (batch_idx + 1) % 10 == 0:
+                    print(f"  [{batch_idx+1}/{total_batches}] 배치 처리 중... ({int((batch_idx+1)/total_batches*100)}%)")
+
+        timings['unet_inference'] = time.time() - t0
 
         # GPU 메모리 정리
         torch.cuda.empty_cache()
 
         # 블렌딩 (병렬 처리)
+        t0 = time.time()
         print("블렌딩 시작 (병렬 처리)...")
 
         # 페이드 인/아웃 프레임 수 (약 0.3초)
@@ -286,14 +539,14 @@ class LipsyncEngine:
             x1, y1, x2, y2 = [int(c) for c in coord]
 
             try:
-                # 1. VAE 출력에 샤프닝 적용 (선명도 향상)
+                # 선명화 + 고품질 리사이즈 버전
                 res_frame_uint8 = res_frame.astype(np.uint8)
 
                 # 언샤프 마스크 (Unsharp Mask) - 선명화
                 gaussian = cv2.GaussianBlur(res_frame_uint8, (0, 0), 2.0)
                 sharpened = cv2.addWeighted(res_frame_uint8, 1.5, gaussian, -0.5, 0)
 
-                # 2. 고품질 리사이즈 (LANCZOS4 보간법)
+                # 고품질 리사이즈 (LANCZOS4)
                 pred_frame_resized = cv2.resize(
                     sharpened,
                     (x2 - x1, y2 - y1),
@@ -328,9 +581,11 @@ class LipsyncEngine:
 
             return (i, result_frame)
 
-        # 병렬 블렌딩 실행 (8개 스레드)
+        # 병렬 블렌딩 실행 (CPU 코어 수에 맞춤)
+        import os as os_module
+        num_workers = min(16, os_module.cpu_count() or 8)
         generated_frames = [None] * total_frames
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
             results = list(tqdm(
                 executor.map(blend_single_frame, enumerate(res_frame_list)),
                 total=total_frames,
@@ -341,14 +596,21 @@ class LipsyncEngine:
         for idx, frame in results:
             generated_frames[idx] = frame
 
+        timings['blending'] = time.time() - t0
+
         # 진행률 전송
-        socketio.emit('status', {
+        emit_kwargs = {
             'message': f'블렌딩 완료',
             'progress': 80,
             'elapsed': time.time() - start_time
-        })
+        }
+        if sid:
+            socketio.emit('status', emit_kwargs, to=sid)
+        else:
+            socketio.emit('status', emit_kwargs)
 
         # 비디오 저장
+        t0 = time.time()
         print("비디오 저장 중...")
         temp_video = str(output_path / "temp_output.mp4")
         final_video = str(output_path / "output_with_audio.mp4")
@@ -363,11 +625,15 @@ class LipsyncEngine:
 
         # 오디오 합성
         print("오디오 합성 중...")
-        socketio.emit('status', {
+        emit_kwargs = {
             'message': '오디오 합성 중...',
             'progress': 90,
             'elapsed': time.time() - start_time
-        })
+        }
+        if sid:
+            socketio.emit('status', emit_kwargs, to=sid)
+        else:
+            socketio.emit('status', emit_kwargs)
 
         # audio_input이 튜플이면 임시 파일 생성
         if isinstance(audio_input, tuple):
@@ -379,15 +645,33 @@ class LipsyncEngine:
         else:
             audio_file_path = audio_input
 
-        subprocess.run([
+        # GPU 인코딩 시도 (NVENC), 실패시 CPU 인코딩
+        nvenc_result = subprocess.run([
             'ffmpeg', '-y',
             '-i', temp_video,
             '-i', audio_file_path,
-            '-c:v', 'libx264',
+            '-c:v', 'h264_nvenc',  # NVIDIA GPU 인코더
+            '-preset', 'p4',       # 빠른 프리셋
             '-c:a', 'aac',
             '-shortest',
             final_video
         ], capture_output=True)
+
+        # NVENC 실패시 CPU 인코딩으로 폴백
+        if nvenc_result.returncode != 0:
+            print("  NVENC 실패, CPU 인코딩 사용")
+            subprocess.run([
+                'ffmpeg', '-y',
+                '-i', temp_video,
+                '-i', audio_file_path,
+                '-c:v', 'libx264',
+                '-preset', 'ultrafast',  # 가장 빠른 CPU 프리셋
+                '-c:a', 'aac',
+                '-shortest',
+                final_video
+            ], capture_output=True)
+        else:
+            print("  NVENC GPU 인코딩 사용")
 
         # 임시 오디오 파일 삭제
         if isinstance(audio_input, tuple) and os.path.exists(temp_audio):
@@ -397,8 +681,19 @@ class LipsyncEngine:
         if os.path.exists(temp_video):
             os.remove(temp_video)
 
+        timings['video_encoding'] = time.time() - t0
+
         elapsed = time.time() - start_time
+        timings['total'] = elapsed
+
+        # 상세 타이밍 출력
         print(f"\n립싱크 생성 완료! ({elapsed:.1f}초)")
+        print(f"  [타이밍 상세]")
+        print(f"    - 프리컴퓨트 로드: {timings.get('precompute_load', 0):.2f}초")
+        print(f"    - Whisper 특징추출: {timings.get('whisper_feature', 0):.2f}초")
+        print(f"    - UNet 추론: {timings.get('unet_inference', 0):.2f}초")
+        print(f"    - 블렌딩: {timings.get('blending', 0):.2f}초")
+        print(f"    - 비디오 인코딩: {timings.get('video_encoding', 0):.2f}초")
         print(f"출력: {final_video}")
 
         return final_video
@@ -667,7 +962,8 @@ def api_generate():
             output_video = lipsync_engine.generate_lipsync(
                 avatar_path,
                 (audio_numpy, sample_rate),  # numpy array 전달
-                output_dir="results/realtime"
+                output_dir="results/realtime",
+                sid=sid  # WebSocket 세션 ID 전달
             )
 
             if sid in client_sessions and client_sessions[sid]['cancelled']:
@@ -828,6 +1124,11 @@ def api_chat():
                 print(f"OpenAI fallback 연결 실패: {e}")
 
         if assistant_message:
+            # LLM 특수 토큰 및 think 태그 제거
+            import re
+            assistant_message = re.sub(r'<\|im_end\|>|<\|im_start\|>|<\|endoftext\|>', '', assistant_message)
+            assistant_message = re.sub(r'<think>.*?</think>', '', assistant_message, flags=re.DOTALL).strip()
+
             conversation_history.append({"role": "assistant", "content": assistant_message})
             return jsonify({"response": assistant_message, "llm_source": llm_source})
         else:
@@ -1110,6 +1411,11 @@ def api_v2_chat_and_lipsync():
         if llm_response is None:
             return jsonify({"success": False, "error": "LLM API 및 OpenAI fallback 모두 실패"}), 500
 
+        # LLM 특수 토큰 및 think 태그 제거
+        import re
+        llm_response = re.sub(r'<\|im_end\|>|<\|im_start\|>|<\|endoftext\|>', '', llm_response)
+        llm_response = re.sub(r'<think>.*?</think>', '', llm_response, flags=re.DOTALL).strip()
+
         conversation_history.append({"role": "assistant", "content": llm_response})
 
         # 2. TTS 생성
@@ -1247,7 +1553,8 @@ def api_generate_streaming():
             output_video = lipsync_engine.generate_lipsync(
                 avatar_path,
                 (audio_numpy, sample_rate),  # numpy array 전달
-                output_dir="results/realtime"
+                output_dir="results/realtime",
+                sid=sid  # WebSocket 세션 ID 전달
             )
 
             if sid in client_sessions and client_sessions[sid]['cancelled']:
@@ -1373,10 +1680,21 @@ if __name__ == '__main__':
     print("=" * 50)
 
     lipsync_engine = LipsyncEngine()
-    lipsync_engine.load_models(use_float16=True)
+    lipsync_engine.load_models(use_float16=True, use_tensorrt=True)  # TensorRT 활성화
     models_loaded = True
 
     print("\n프리로드 완료!")
+
+    # LLM 설정 정보 출력
+    llm_api_url = os.getenv('LLM_API_URL', 'https://api.mindprep.co.kr/v1/chat/completions')
+    llm_model = os.getenv('LLM_MODEL', 'vllm-qwen3-30b-a3b')
+    openai_api_key = os.getenv('OPENAI_API_KEY', '')
+
+    print("\n" + "=" * 50)
+    print("LLM 설정:")
+    print(f"  Primary: {llm_model} ({llm_api_url})")
+    print(f"  Fallback: {'OpenAI gpt-4o-mini (설정됨)' if openai_api_key else 'OpenAI (미설정)'}")
+    print("=" * 50)
 
     print(f"\nURL: http://localhost:5000")
     print("=" * 50)

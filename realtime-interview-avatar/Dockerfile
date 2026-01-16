@@ -1,6 +1,6 @@
 # =============================================================================
 # 실시간 립싱크 아바타 서버 Docker 이미지
-# MuseTalk V1.5 + EdgeTTS
+# MuseTalk V1.5 + ElevenLabs TTS + TensorRT 최적화
 # =============================================================================
 
 # CUDA 12.4.1 devel 이미지 (PyTorch 2.11 CUDA 12.9와 호환)
@@ -118,6 +118,34 @@ RUN pip install --no-cache-dir \
     onnxruntime-gpu==1.20.0
 
 # =============================================================================
+# TensorRT 10.x 설치 (NVIDIA 공식 저장소)
+# =============================================================================
+# NVIDIA 키링 설치
+RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb \
+    && dpkg -i cuda-keyring_1.1-1_all.deb \
+    && rm cuda-keyring_1.1-1_all.deb \
+    && apt-get update
+
+# TensorRT 10.x 라이브러리 설치 (libnvinfer.so.10 포함)
+RUN apt-get install -y --no-install-recommends \
+    libnvinfer10 \
+    libnvinfer-plugin10 \
+    libnvinfer-vc-plugin10 \
+    libnvinfer-headers-dev \
+    libnvinfer-dev \
+    libnvonnxparsers10 \
+    libnvonnxparsers-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# TensorRT 라이브러리 경로 설정
+ENV LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}"
+
+# TensorRT Python 의존성 (UNet 최적화용)
+RUN pip install --no-cache-dir \
+    onnx==1.16.0 \
+    pycuda
+
+# =============================================================================
 # 프로젝트 파일 복사
 # =============================================================================
 
@@ -127,6 +155,7 @@ COPY MuseTalk/configs /app/MuseTalk/configs
 
 # 메인 애플리케이션 복사
 COPY realtime-interview-avatar/app.py /app/realtime-interview-avatar/
+COPY realtime-interview-avatar/convert_unet_onnx.py /app/realtime-interview-avatar/
 COPY realtime-interview-avatar/templates /app/realtime-interview-avatar/templates
 COPY realtime-interview-avatar/static /app/realtime-interview-avatar/static
 COPY realtime-interview-avatar/assets /app/realtime-interview-avatar/assets
