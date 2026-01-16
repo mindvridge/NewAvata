@@ -69,9 +69,9 @@ from collections import OrderedDict
 import uuid
 
 class ParallelGenerationQueue:
-    """병렬 립싱크 생성 요청 큐 시스템 (동시 2개 처리)"""
+    """병렬 립싱크 생성 요청 큐 시스템"""
 
-    MAX_CONCURRENT = 2  # 동시 처리 최대 수
+    MAX_CONCURRENT = 3  # 동시 처리 최대 수 (RTX 5060 Ti 16GB 기준, 안전 마진 포함)
 
     def __init__(self):
         self.queue = OrderedDict()  # {request_id: request_data}
