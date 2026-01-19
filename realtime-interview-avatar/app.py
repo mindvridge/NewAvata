@@ -56,6 +56,7 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 # 전역 상태
 lipsync_engine = None
 precomputed_avatars = {}
+precomputed_cache = {}  # 프리컴퓨트 데이터 메모리 캐시 {path: data}
 current_process = None  # 현재 실행 중인 프로세스
 models_loaded = False  # 모델 로드 상태
 
@@ -449,7 +450,20 @@ class LipsyncEngine:
 
         start_time = time.time()
         timings = {}  # 상세 타이밍 기록
-        batch_size = 32  # 배치 크기 증가 (GPU 활용도 향상)
+        
+        # 배치 크기 동적 조정 (GPU 메모리에 따라)
+        import torch
+        if torch.cuda.is_available():
+            free_memory = torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0)
+            if free_memory > 8 * 1024**3:  # 8GB 이상
+                batch_size = 32
+            elif free_memory > 4 * 1024**3:  # 4GB 이상
+                batch_size = 16
+            else:
+                batch_size = 8
+            print(f"GPU 메모리 기반 배치 크기: {batch_size} (여유 메모리: {free_memory / 1024**3:.1f}GB)")
+        else:
+            batch_size = 32  # CPU 모드
 
         # 프리컴퓨트 데이터 로드 (미리 로드된 데이터가 있으면 사용)
         t0 = time.time()
@@ -662,33 +676,44 @@ class LipsyncEngine:
 
         # 프레임 보간 (스킵된 프레임 복원)
         if frame_skip > 1:
-            t0_interp = time.time()
-            print(f"[프레임 보간] {actual_inference_frames}프레임 -> {num_frames}프레임...")
-            res_frame_list = [None] * num_frames
+            # 프레임 보간 옵션 (환경변수로 제어, 기본값: false = 보간 사용)
+            skip_interpolation = os.getenv('SKIP_INTERPOLATION', 'false').lower() == 'true'
+            
+            if skip_interpolation:
+                # 보간 생략 (가장 빠름, 품질 약간 저하)
+                print(f"[프레임 보간 생략] 추론된 {actual_inference_frames}프레임만 사용")
+                res_frame_list = inference_frame_list
+                timings['frame_interpolation'] = 0.0
+            else:
+                # 선형 보간 (기본, 품질 유지)
+                t0_interp = time.time()
+                print(f"[프레임 보간] {actual_inference_frames}프레임 -> {num_frames}프레임...")
+                res_frame_list = [None] * num_frames
 
-            # 추론된 프레임 배치
-            for idx, frame_idx in enumerate(inference_indices):
-                res_frame_list[frame_idx] = inference_frame_list[idx]
+                # 추론된 프레임 배치
+                for idx, frame_idx in enumerate(inference_indices):
+                    res_frame_list[frame_idx] = inference_frame_list[idx]
 
-            # 중간 프레임 보간 (선형 보간)
-            for i in range(len(inference_indices) - 1):
-                start_idx = inference_indices[i]
-                end_idx = inference_indices[i + 1]
-                start_frame = res_frame_list[start_idx]
-                end_frame = res_frame_list[end_idx]
+                # 중간 프레임 보간 (선형 보간 - 최적화된 버전)
+                for i in range(len(inference_indices) - 1):
+                    start_idx = inference_indices[i]
+                    end_idx = inference_indices[i + 1]
+                    start_frame = res_frame_list[start_idx].astype(np.float32)
+                    end_frame = res_frame_list[end_idx].astype(np.float32)
+                    
+                    # 중간 프레임들 보간 (벡터화된 연산)
+                    num_interp = end_idx - start_idx - 1
+                    if num_interp > 0:
+                        alphas = np.linspace(0, 1, num_interp + 2)[1:-1]  # 시작/끝 제외
+                        for j, alpha in enumerate(alphas, start=start_idx + 1):
+                            interpolated = cv2.addWeighted(
+                                start_frame, 1.0 - alpha,
+                                end_frame, alpha, 0
+                            ).astype(np.uint8)
+                            res_frame_list[j] = interpolated
 
-                # 중간 프레임들 보간
-                for j in range(start_idx + 1, end_idx):
-                    alpha = (j - start_idx) / (end_idx - start_idx)
-                    # 선형 보간 (빠름)
-                    interpolated = cv2.addWeighted(
-                        start_frame.astype(np.float32), 1.0 - alpha,
-                        end_frame.astype(np.float32), alpha, 0
-                    ).astype(np.uint8)
-                    res_frame_list[j] = interpolated
-
-            timings['frame_interpolation'] = time.time() - t0_interp
-            print(f"  프레임 보간 완료: {timings['frame_interpolation']:.2f}초")
+                timings['frame_interpolation'] = time.time() - t0_interp
+                print(f"  프레임 보간 완료: {timings['frame_interpolation']:.2f}초")
         else:
             res_frame_list = inference_frame_list
 
@@ -919,6 +944,13 @@ class LipsyncEngine:
 
         timings['video_encoding'] = time.time() - t0
 
+        # 표준 파일명으로 복사 (기존 코드 호환성)
+        standard_output = str(output_path / "output_with_audio.mp4")
+        if os.path.exists(final_video):
+            import shutil
+            shutil.copy2(final_video, standard_output)
+            print(f"표준 파일명으로 복사: {standard_output}")
+
         elapsed = time.time() - start_time
         timings['total'] = elapsed
 
@@ -931,8 +963,9 @@ class LipsyncEngine:
         print(f"    - 블렌딩: {timings.get('blending', 0):.2f}초")
         print(f"    - 비디오 인코딩: {timings.get('video_encoding', 0):.2f}초")
         print(f"출력: {final_video}")
+        print(f"표준 출력: {standard_output}")
 
-        return final_video
+        return standard_output
 
     def generate_lipsync_streaming(self, precomputed_path, audio_input, sid, emit_callback, preloaded_data=None, frame_skip=1):
         """
@@ -1152,26 +1185,27 @@ class LipsyncEngine:
         return True
 
 
-# TTS 엔진 설정
+# TTS 엔진 설정 - CosyVoice (기본) + ElevenLabs
 TTS_ENGINES = {
+    'cosyvoice': {
+        'name': 'CosyVoice (로컬 서버)',
+        'voices': ['default'],
+        'default': True
+    },
     'elevenlabs': {
         'name': 'ElevenLabs',
         'voices': ['Custom'],
-        'default': True
-    },
-    'edge': {
-        'name': 'Edge TTS (무료)',
-        'voices': ['ko-KR-SunHiNeural'],
         'default': False
     }
 }
 
-# 기본 TTS 엔진
-DEFAULT_TTS_ENGINE = 'elevenlabs'
-DEFAULT_TTS_VOICE = 'Custom'
+# 기본 TTS 엔진 - CosyVoice (로컬 서버)
+DEFAULT_TTS_ENGINE = 'cosyvoice'
+DEFAULT_TTS_VOICE = 'default'
 
-# API 키 설정
+# API 설정
 ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY', '')
+COSYVOICE_API_URL = os.getenv('COSYVOICE_API_URL', 'http://172.16.10.200:5000')
 
 
 def get_available_avatars():
@@ -1391,9 +1425,19 @@ def api_queue_position(sid):
 
 
 def load_precomputed_data(precomputed_path):
-    """프리컴퓨트 데이터 로드 (병렬화용)"""
-    with open(precomputed_path, 'rb') as f:
-        precomputed = pickle.load(f)
+    """프리컴퓨트 데이터 로드 (병렬화용 + 메모리 캐싱)"""
+    global precomputed_cache
+    
+    # 캐시 확인
+    if precomputed_path in precomputed_cache:
+        print(f"프리컴퓨트 캐시 사용: {precomputed_path}")
+        precomputed = precomputed_cache[precomputed_path]
+    else:
+        with open(precomputed_path, 'rb') as f:
+            precomputed = pickle.load(f)
+        # 캐시에 저장
+        precomputed_cache[precomputed_path] = precomputed
+        print(f"프리컴퓨트 로드 및 캐시 저장: {precomputed_path}")
 
     coords_list = precomputed.get('coords_list', precomputed.get('coord_list_cycle'))
     frames_list = precomputed.get('frames', precomputed.get('frame_list_cycle'))
@@ -1420,9 +1464,293 @@ def get_elevenlabs_voice_id(voice_name):
     return voice_ids.get(voice_name, voice_ids['Custom'])
 
 
+def split_text_into_sentences(text, min_chunk_length=50, max_chunk_length=200):
+    """
+    텍스트를 문장 단위로 분할하고, 짧은 문장은 묶어서 반환
+    
+    Args:
+        text: 입력 텍스트
+        min_chunk_length: 최소 청크 길이 (이보다 짧으면 묶음)
+        max_chunk_length: 최대 청크 길이 (이보다 길면 분할)
+    
+    Returns:
+        List[str]: 분할된 텍스트 청크들
+    """
+    import re
+    
+    # 문장 종결 문자로 분할 (., !, ?, 。, ！, ？)
+    sentence_endings = r'[.!?。！？]\s*'
+    sentences = re.split(sentence_endings, text)
+    
+    # 빈 문장 제거 및 공백 정리
+    sentences = [s.strip() for s in sentences if s.strip()]
+    
+    if not sentences:
+        return [text]
+    
+    chunks = []
+    current_chunk = ""
+    
+    for sentence in sentences:
+        # 문장 끝에 구두점 추가 (분할 시 제거되었으므로)
+        if not sentence.endswith(('.', '!', '?', '。', '！', '？')):
+            sentence += '.'
+        
+        # 현재 청크에 추가했을 때 길이 확인
+        potential_chunk = (current_chunk + " " + sentence).strip() if current_chunk else sentence
+        
+        if len(potential_chunk) > max_chunk_length:
+            # 현재 청크가 너무 길어지면 저장하고 새로 시작
+            if current_chunk:
+                chunks.append(current_chunk)
+            # 단일 문장이 너무 길면 강제 분할
+            if len(sentence) > max_chunk_length:
+                # 긴 문장을 강제로 분할 (쉼표나 공백 기준)
+                parts = re.split(r'[,，]\s*', sentence)
+                temp_chunk = ""
+                for part in parts:
+                    if len(temp_chunk + part) > max_chunk_length:
+                        if temp_chunk:
+                            chunks.append(temp_chunk.strip())
+                        temp_chunk = part
+                    else:
+                        temp_chunk = (temp_chunk + ", " + part).strip() if temp_chunk else part
+                if temp_chunk:
+                    current_chunk = temp_chunk
+            else:
+                current_chunk = sentence
+        elif len(potential_chunk) < min_chunk_length:
+            # 짧은 문장은 묶어서 처리
+            current_chunk = potential_chunk
+        else:
+            # 적절한 길이면 저장하고 새로 시작
+            if current_chunk:
+                chunks.append(current_chunk)
+            current_chunk = sentence
+    
+    # 마지막 청크 추가
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    return chunks if chunks else [text]
+
+
+def generate_tts_audio_streaming(text, engine, voice, chunk_callback, output_path=None):
+    """
+    TTS 오디오 스트리밍 생성 - 문장 단위로 처리, 청크를 받는 대로 콜백 호출
+
+    Args:
+        text: 합성할 텍스트
+        engine: TTS 엔진 ('cosyvoice' 또는 'elevenlabs')
+        voice: 음성 이름
+        chunk_callback: 청크를 받을 때마다 호출되는 콜백 함수 (chunk_data, sample_rate, is_final)
+        output_path: 저장 경로 (선택사항)
+
+    Returns:
+        tuple: (audio_numpy, sample_rate) - 성공 시 전체 오디오와 샘플레이트 반환
+        None: 실패 시
+    """
+    import torch
+    import torchaudio
+    import numpy as np
+    import soundfile as sf
+    import io
+
+    print(f"[TTS Streaming] engine={engine}, voice={voice}, text={text[:50]}...")
+    
+    # 텍스트를 문장 단위로 분할
+    text_chunks = split_text_into_sentences(text, min_chunk_length=50, max_chunk_length=200)
+    print(f"[TTS Streaming] 텍스트를 {len(text_chunks)}개 청크로 분할")
+    
+    all_audio_chunks = []
+    final_sample_rate = 16000
+
+    if engine == 'cosyvoice':
+        # CosyVoice TTS (문장 단위 스트리밍)
+        import requests
+        import librosa
+        import base64
+
+        start_time = time.time()
+        
+        # 각 텍스트 청크를 순차적으로 처리
+        for chunk_idx, text_chunk in enumerate(text_chunks):
+            is_last_chunk = (chunk_idx == len(text_chunks) - 1)
+            print(f"[CosyVoice] 청크 {chunk_idx + 1}/{len(text_chunks)} 처리: {text_chunk[:30]}...")
+            
+            try:
+                # 스트리밍 TTS 요청
+                response = requests.post(
+                    f"{COSYVOICE_API_URL}/api/tts/stream",
+                    json={"text": text_chunk, "speed": 1.0},
+                    stream=True,
+                    timeout=120
+                )
+
+                if response.status_code == 200:
+                    wav_data = b''
+                    
+                    # 스트리밍 데이터를 모두 수집 (WAV 헤더 포함)
+                    for chunk in response.iter_content(chunk_size=4096):
+                        if chunk:
+                            wav_data += chunk
+
+                    # 이 텍스트 청크의 오디오를 numpy로 변환
+                    wav_buffer = io.BytesIO(wav_data)
+                    audio_data, sr = sf.read(wav_buffer)
+
+                    # 스테레오인 경우 모노로 변환
+                    if len(audio_data.shape) > 1:
+                        audio_data = audio_data.mean(axis=1)
+
+                    # 16kHz로 리샘플링 (CosyVoice는 24kHz 출력)
+                    if sr != 16000:
+                        audio_data = librosa.resample(audio_data, orig_sr=sr, target_sr=16000)
+                        sr = 16000
+
+                    audio_numpy = audio_data.astype(np.float32)
+                    all_audio_chunks.append(audio_numpy)
+                    final_sample_rate = 16000
+                    
+                    # 이 텍스트 청크의 오디오를 즉시 클라이언트로 전송 (문장 단위 스트리밍)
+                    chunk_wav_buffer = io.BytesIO()
+                    sf.write(chunk_wav_buffer, audio_numpy, 16000)
+                    chunk_wav_buffer.seek(0)
+                    chunk_base64 = base64.b64encode(chunk_wav_buffer.read()).decode('utf-8')
+                    # 마지막 청크가 아니면 is_final=False, 마지막이면 True
+                    chunk_callback(chunk_base64, 16000, is_last_chunk)
+                    
+                    print(f"[CosyVoice] 청크 {chunk_idx + 1} 완료 및 전송 (길이: {len(audio_numpy)/16000:.2f}초, is_last={is_last_chunk})")
+                    
+                else:
+                    print(f"[CosyVoice] 오류: {response.status_code} - {response.text}")
+                    # ElevenLabs로 폴백
+                    print("[TTS] ElevenLabs로 폴백합니다...")
+                    return generate_tts_audio_streaming(text, 'elevenlabs', 'Custom', chunk_callback, output_path)
+                    
+            except requests.exceptions.ConnectionError as e:
+                print(f"[CosyVoice] 서버 연결 실패: {e}")
+                print("[TTS] ElevenLabs로 폴백합니다...")
+                return generate_tts_audio_streaming(text, 'elevenlabs', 'Custom', chunk_callback, output_path)
+            except Exception as e:
+                print(f"[CosyVoice] 오류: {e}")
+                import traceback
+                traceback.print_exc()
+                print("[TTS] ElevenLabs로 폴백합니다...")
+                return generate_tts_audio_streaming(text, 'elevenlabs', 'Custom', chunk_callback, output_path)
+        
+        # 모든 청크를 합쳐서 최종 오디오 생성
+        if all_audio_chunks:
+            final_audio = np.concatenate(all_audio_chunks)
+            
+            # 최종 완료 신호만 전송 (각 청크는 이미 전송됨)
+            # 빈 데이터로 완료 신호만 보냄
+            chunk_callback("", final_sample_rate, True)
+            
+            if output_path:
+                sf.write(str(output_path), final_audio, final_sample_rate)
+            
+            elapsed = time.time() - start_time
+            print(f"[CosyVoice] 전체 TTS 완료 (총 {len(text_chunks)}개 청크, 시간: {elapsed:.2f}초, 길이: {len(final_audio)/final_sample_rate:.2f}초)")
+            return (final_audio, final_sample_rate)
+        
+        return None
+
+    elif engine == 'elevenlabs':
+        # ElevenLabs TTS (문장 단위 스트리밍)
+        import requests
+        from pydub import AudioSegment
+        import base64
+
+        voice_id = get_elevenlabs_voice_id(voice)
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
+
+        headers = {
+            "Accept": "audio/mpeg",
+            "Content-Type": "application/json",
+            "xi-api-key": ELEVENLABS_API_KEY
+        }
+
+        start_time = time.time()
+        
+        # 각 텍스트 청크를 순차적으로 처리
+        for chunk_idx, text_chunk in enumerate(text_chunks):
+            is_last_chunk = (chunk_idx == len(text_chunks) - 1)
+            print(f"[ElevenLabs] 청크 {chunk_idx + 1}/{len(text_chunks)} 처리: {text_chunk[:30]}...")
+            
+            data = {
+                "text": text_chunk,
+                "model_id": "eleven_flash_v2_5",  # 저지연 Flash 모델 (32개 언어, ~75ms)
+                "voice_settings": {
+                    "stability": 0.5,
+                    "similarity_boost": 0.75
+                }
+            }
+
+            # 스트리밍 요청
+            response = requests.post(url, json=data, headers=headers, stream=True)
+            mp3_chunks = []
+
+            if response.status_code == 200:
+                # 스트리밍 데이터를 청크 단위로 처리
+                for chunk in response.iter_content(chunk_size=1024):
+                    if chunk:
+                        mp3_chunks.append(chunk)
+                        # MP3 청크를 Base64로 인코딩하여 즉시 전송
+                        chunk_base64 = base64.b64encode(chunk).decode('utf-8')
+                        chunk_callback(chunk_base64, 16000, False)
+
+                # 이 텍스트 청크의 오디오를 numpy로 변환 (전체 오디오 수집용)
+                mp3_data = b''.join(mp3_chunks)
+                mp3_bytes = io.BytesIO(mp3_data)
+                audio_segment = AudioSegment.from_mp3(mp3_bytes)
+
+                # 16kHz로 리샘플링
+                audio_segment = audio_segment.set_frame_rate(16000)
+                audio_segment = audio_segment.set_channels(1)  # mono
+
+                # numpy array로 변환
+                audio_numpy = np.array(audio_segment.get_array_of_samples(), dtype=np.float32)
+                audio_numpy = audio_numpy / 32768.0  # int16 -> float32
+                
+                all_audio_chunks.append(audio_numpy)
+                final_sample_rate = 16000
+                
+                # 이 텍스트 청크의 완료 신호 전송 (MP3 청크는 이미 전송됨)
+                # 마지막 청크가 아니면 is_final=False, 마지막이면 True
+                if is_last_chunk:
+                    # 마지막 청크 완료 신호는 나중에 보냄
+                    pass
+                
+                print(f"[ElevenLabs] 청크 {chunk_idx + 1} 완료 (길이: {len(audio_numpy)/16000:.2f}초, is_last={is_last_chunk})")
+            else:
+                print(f"ElevenLabs 오류: {response.status_code} - {response.text}")
+                return None
+        
+        # 모든 청크를 합쳐서 최종 오디오 생성
+        if all_audio_chunks:
+            final_audio = np.concatenate(all_audio_chunks)
+            
+            # 최종 완료 신호만 전송 (각 청크는 이미 전송됨)
+            # 빈 데이터로 완료 신호만 보냄
+            chunk_callback("", final_sample_rate, True)
+            
+            if output_path:
+                sf.write(str(output_path), final_audio, final_sample_rate)
+            
+            elapsed = time.time() - start_time
+            print(f"[ElevenLabs] 전체 TTS 완료 (총 {len(text_chunks)}개 청크, 시간: {elapsed:.2f}초, 길이: {len(final_audio)/final_sample_rate:.2f}초)")
+            return (final_audio, final_sample_rate)
+        
+        return None
+
+    print(f"[TTS] 알 수 없는 엔진: {engine}")
+    return None
+
+
 def generate_tts_audio(text, engine, voice, output_path=None):
     """
-    TTS 오디오 생성
+    TTS 오디오 생성 (기존 함수 - 호환성 유지)
 
     Returns:
         tuple: (audio_numpy, sample_rate) - 성공 시 numpy array와 샘플레이트 반환
@@ -1433,7 +1761,73 @@ def generate_tts_audio(text, engine, voice, output_path=None):
 
     print(f"[TTS] engine={engine}, voice={voice}, text={text[:50]}...")
 
-    if engine == 'elevenlabs':
+    if engine == 'cosyvoice':
+        # CosyVoice TTS (로컬 서버 스트리밍)
+        import requests
+        import io
+        import soundfile as sf
+        import librosa
+
+        start_time = time.time()
+
+        try:
+            # 스트리밍 TTS 요청
+            response = requests.post(
+                f"{COSYVOICE_API_URL}/api/tts/stream",
+                json={"text": text, "speed": 1.0},
+                stream=True,
+                timeout=120
+            )
+
+            if response.status_code == 200:
+                # 스트리밍 데이터 수집
+                wav_data = b''
+                for chunk in response.iter_content(chunk_size=4096):
+                    if chunk:
+                        wav_data += chunk
+
+                elapsed = time.time() - start_time
+                print(f"[CosyVoice] 스트리밍 완료 (시간: {elapsed:.2f}초, 크기: {len(wav_data)} bytes)")
+
+                # WAV 데이터를 numpy로 변환
+                wav_buffer = io.BytesIO(wav_data)
+                audio_data, sr = sf.read(wav_buffer)
+
+                # 스테레오인 경우 모노로 변환
+                if len(audio_data.shape) > 1:
+                    audio_data = audio_data.mean(axis=1)
+
+                # 16kHz로 리샘플링 (CosyVoice는 24kHz 출력)
+                if sr != 16000:
+                    audio_data = librosa.resample(audio_data, orig_sr=sr, target_sr=16000)
+                    sr = 16000
+
+                audio_numpy = audio_data.astype(np.float32)
+
+                if output_path:
+                    sf.write(str(output_path), audio_numpy, 16000)
+
+                print(f"[CosyVoice] TTS 완료 (길이: {len(audio_numpy)/16000:.2f}초)")
+                return (audio_numpy, 16000)
+
+            else:
+                print(f"[CosyVoice] 오류: {response.status_code} - {response.text}")
+                # ElevenLabs로 폴백
+                print("[TTS] ElevenLabs로 폴백합니다...")
+                return generate_tts_audio(text, 'elevenlabs', 'Custom', output_path)
+
+        except requests.exceptions.ConnectionError as e:
+            print(f"[CosyVoice] 서버 연결 실패: {e}")
+            print("[TTS] ElevenLabs로 폴백합니다...")
+            return generate_tts_audio(text, 'elevenlabs', 'Custom', output_path)
+        except Exception as e:
+            print(f"[CosyVoice] 오류: {e}")
+            import traceback
+            traceback.print_exc()
+            print("[TTS] ElevenLabs로 폴백합니다...")
+            return generate_tts_audio(text, 'elevenlabs', 'Custom', output_path)
+
+    elif engine == 'elevenlabs':
         # ElevenLabs TTS (스트리밍 + Flash v2.5 저지연 모델)
         import requests
         import io
@@ -1495,64 +1889,6 @@ def generate_tts_audio(text, engine, voice, output_path=None):
 
         print(f"ElevenLabs 오류: {response.status_code} - {response.text}")
         return None
-
-    elif engine == 'edge':
-        # Microsoft Edge TTS (무료)
-        try:
-            import edge_tts
-            import asyncio
-            import io
-            import soundfile as sf
-            from pydub import AudioSegment
-
-            start_time = time.time()
-
-            # 음성 선택
-            voice_name = voice if voice else 'ko-KR-SunHiNeural'
-
-            async def generate_edge_tts():
-                communicate = edge_tts.Communicate(text, voice_name)
-                audio_data = b''
-                async for chunk in communicate.stream():
-                    if chunk["type"] == "audio":
-                        audio_data += chunk["data"]
-                return audio_data
-
-            # 새 이벤트 루프에서 실행 (스레드 안전)
-            mp3_data = asyncio.run(generate_edge_tts())
-
-            if not mp3_data:
-                print("[TTS] Edge TTS: 오디오 데이터가 비어있습니다")
-                return None
-
-            # MP3를 AudioSegment로 변환
-            mp3_buffer = io.BytesIO(mp3_data)
-            audio_segment = AudioSegment.from_mp3(mp3_buffer)
-
-            # 16kHz mono로 변환
-            audio_segment = audio_segment.set_frame_rate(16000)
-            audio_segment = audio_segment.set_channels(1)
-
-            # numpy array로 변환
-            audio_numpy = np.array(audio_segment.get_array_of_samples(), dtype=np.float32)
-            audio_numpy = audio_numpy / 32768.0
-
-            elapsed = time.time() - start_time
-            print(f"Edge TTS 완료 (시간: {elapsed:.2f}초, 길이: {len(audio_numpy)/16000:.2f}초)")
-
-            if output_path:
-                sf.write(str(output_path), audio_numpy, 16000)
-
-            return (audio_numpy, 16000)
-
-        except ImportError as e:
-            print(f"[TTS] edge-tts가 설치되지 않았습니다. pip install edge-tts: {e}")
-            return None
-        except Exception as e:
-            print(f"[TTS] Edge TTS 오류: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
 
     print(f"[TTS] 알 수 없는 엔진: {engine}")
     return None
@@ -1783,8 +2119,11 @@ def process_generation_request(request_data):
     if output_video:
         elapsed = time.time() - start_time
         socketio.emit('status', {'message': '완료!', 'progress': 100, 'elapsed': elapsed}, to=sid)
+        # 실제 생성된 파일 경로에서 파일명 추출
+        video_filename = os.path.basename(output_video)
         socketio.emit('complete', {
-            'video_path': 'results/realtime/output_with_audio.mp4',
+            'video_path': output_video,
+            'video_url': f'/video/{video_filename}',
             'elapsed': elapsed
         }, to=sid)
     else:
@@ -2104,10 +2443,12 @@ def api_v2_lipsync():
 
         if output_video:
             elapsed = time.time() - start_time
+            # 실제 생성된 파일 경로에서 파일명 추출
+            video_filename = os.path.basename(output_video)
             return jsonify({
                 "success": True,
                 "video_path": output_video,
-                "video_url": "/video/output_with_audio.mp4",
+                "video_url": f"/video/{video_filename}",
                 "elapsed": round(elapsed, 2)
             })
         else:
@@ -2269,11 +2610,13 @@ def api_v2_chat_and_lipsync():
         elapsed = time.time() - start_time
 
         if output_video:
+            # 실제 생성된 파일 경로에서 파일명 추출
+            video_filename = os.path.basename(output_video)
             return jsonify({
                 "success": True,
                 "response": llm_response,
                 "video_path": output_video,
-                "video_url": "/video/output_with_audio.mp4",
+                "video_url": f"/video/{video_filename}",
                 "elapsed": round(elapsed, 2)
             })
         else:
@@ -2361,11 +2704,42 @@ def api_generate_streaming():
             import soundfile as sf
             import io
 
-            # 1. TTS 생성 (메모리에서 직접 처리)
+            # 1. TTS 스트리밍 생성 (청크를 받는 대로 전송)
             engine_name = TTS_ENGINES.get(tts_engine, {}).get('name', tts_engine)
-            socketio.emit('status', {'message': f'TTS 생성 중 ({engine_name})...', 'progress': 0, 'elapsed': 0}, to=sid)
+            socketio.emit('status', {'message': f'TTS 스트리밍 시작 ({engine_name})...', 'progress': 0, 'elapsed': 0}, to=sid)
 
-            tts_result = generate_tts_audio(text, tts_engine, tts_voice)
+            # TTS 청크 콜백 함수
+            audio_chunks = []
+            sample_rate = 16000
+            
+            def tts_chunk_callback(chunk_base64, sr, is_final):
+                """TTS 청크를 받을 때마다 호출되는 콜백"""
+                nonlocal sample_rate
+                sample_rate = sr
+                
+                # 빈 문자열이면 완료 신호만 전송
+                if chunk_base64 == "":
+                    socketio.emit('stream_audio_complete', {
+                        'sample_rate': sr,
+                        'total_length': 0,
+                        'elapsed': time.time() - start_time
+                    }, to=sid)
+                    return
+                
+                # 청크를 클라이언트로 즉시 전송
+                socketio.emit('stream_audio_chunk', {
+                    'audio': chunk_base64,
+                    'sample_rate': sr,
+                    'is_final': is_final,
+                    'elapsed': time.time() - start_time
+                }, to=sid)
+                
+                # 전체 오디오 수집 (최종 반환용)
+                if not is_final:
+                    audio_chunks.append(chunk_base64)
+
+            # TTS 스트리밍 생성
+            tts_result = generate_tts_audio_streaming(text, tts_engine, tts_voice, tts_chunk_callback)
 
             if tts_result is None:
                 socketio.emit('error', {'message': f'TTS 생성 실패 ({engine_name})'}, to=sid)
@@ -2377,16 +2751,10 @@ def api_generate_streaming():
                 socketio.emit('cancelled', {'message': '생성이 취소되었습니다'}, to=sid)
                 return
 
-            # 2. 오디오를 Base64로 인코딩하여 즉시 전송
-            audio_buffer = io.BytesIO()
-            sf.write(audio_buffer, audio_numpy, sample_rate, format='WAV')
-            audio_buffer.seek(0)
-            audio_base64 = base64.b64encode(audio_buffer.read()).decode('utf-8')
-
-            # 오디오 먼저 전송 (클라이언트가 오디오를 먼저 로드할 수 있음)
-            socketio.emit('stream_audio', {
-                'audio': audio_base64,
+            # TTS 스트리밍 완료 신호
+            socketio.emit('stream_audio_complete', {
                 'sample_rate': sample_rate,
+                'total_length': len(audio_numpy) / sample_rate,
                 'elapsed': time.time() - start_time
             }, to=sid)
 
