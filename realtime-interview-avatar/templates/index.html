@@ -567,6 +567,10 @@
         <header>
             <h1>AI Interview</h1>
             <p>AI 면접관과 실시간 면접 연습</p>
+            <div class="nav-links" style="margin: 15px 0;">
+                <a href="/" style="color: #00d2ff; text-decoration: none; margin: 0 15px;">면접 시뮬레이션</a>
+                <a href="/record" style="color: #feca57; text-decoration: none; margin: 0 15px;">🎬 영상 녹화</a>
+            </div>
             <div class="llm-status-container" id="llmStatusContainer">
                 <div class="llm-status-item" id="llmPrimaryStatus">
                     <span class="llm-status-dot checking" id="llmPrimaryDot"></span>
@@ -611,8 +615,18 @@
                         <label>출력 해상도</label>
                         <select id="resolutionSelect">
                             <option value="720p">720p (고품질)</option>
-                            <option value="480p" selected>480p (빠른 속도)</option>
-                            <option value="360p">360p (최고 속도)</option>
+                            <option value="480p">480p (균형)</option>
+                            <option value="360p" selected>360p (빠른 응답)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label>응답 속도</label>
+                        <select id="speedModeSelect">
+                            <option value="quality">고품질 (느림)</option>
+                            <option value="balanced">균형</option>
+                            <option value="fast" selected>빠른 응답 (권장)</option>
+                            <option value="realtime">실시간 (최저품질)</option>
                         </select>
                     </div>
                 </div>
@@ -1353,6 +1367,16 @@
                 const ttsEngine = document.getElementById('ttsEngineSelect').value;
                 const ttsVoice = document.getElementById('ttsVoiceSelect').value;
                 const resolution = document.getElementById('resolutionSelect').value;
+                const speedMode = document.getElementById('speedModeSelect').value;
+
+                // 속도 모드에 따른 frame_skip 값 결정
+                const frameSkipMap = {
+                    'quality': 1,    // 고품질: 모든 프레임
+                    'balanced': 2,   // 균형: 2프레임당 1추론
+                    'fast': 3,       // 빠름: 3프레임당 1추론
+                    'realtime': 3    // 실시간: 3프레임당 1추론
+                };
+                const frameSkip = frameSkipMap[speedMode] || 2;
 
                 if (streamingMode) {
                     // 스트리밍 상태 초기화
@@ -1367,7 +1391,7 @@
                             tts_engine: ttsEngine,
                             tts_voice: ttsVoice,
                             sid: clientSid,
-                            frame_skip: 2,  // 스트리밍 최적화
+                            frame_skip: frameSkip,
                             resolution: resolution
                         })
                     });
@@ -1383,6 +1407,7 @@
                             tts_engine: ttsEngine,
                             tts_voice: ttsVoice,
                             sid: clientSid,
+                            frame_skip: frameSkip,
                             resolution: resolution
                         })
                     });
@@ -1456,6 +1481,16 @@
                 const ttsEngine = document.getElementById('ttsEngineSelect').value;
                 const ttsVoice = document.getElementById('ttsVoiceSelect').value;
                 const resolution = document.getElementById('resolutionSelect').value;
+                const speedMode = document.getElementById('speedModeSelect').value;
+
+                // 속도 모드에 따른 frame_skip 값 결정
+                const frameSkipMap = {
+                    'quality': 1,
+                    'balanced': 2,
+                    'fast': 3,
+                    'realtime': 3
+                };
+                const frameSkip = frameSkipMap[speedMode] || 2;
 
                 if (streamingMode) {
                     // 스트리밍 상태 초기화
@@ -1470,7 +1505,7 @@
                             tts_engine: ttsEngine,
                             tts_voice: ttsVoice,
                             sid: clientSid,
-                            frame_skip: 2,  // 스트리밍 최적화
+                            frame_skip: frameSkip,
                             resolution: resolution
                         })
                     });
@@ -1486,6 +1521,7 @@
                             tts_engine: ttsEngine,
                             tts_voice: ttsVoice,
                             sid: clientSid,
+                            frame_skip: frameSkip,
                             resolution: resolution
                         })
                     });

@@ -425,7 +425,7 @@ class LipsyncEngine:
         self.loaded = True
         return True
 
-    def generate_lipsync(self, precomputed_path, audio_input, output_dir="results/realtime", fps=25, sid=None, preloaded_data=None, frame_skip=1, resolution="720p"):
+    def generate_lipsync(self, precomputed_path, audio_input, output_dir="results/realtime", fps=25, sid=None, preloaded_data=None, frame_skip=1, resolution="720p", filename=None, text=None, output_format="mp4"):
         """
         프리컴퓨트된 아바타로 립싱크 생성 (배치 처리 + 공식 MuseTalk 블렌딩)
 
@@ -438,6 +438,9 @@ class LipsyncEngine:
             preloaded_data: 미리 로드된 프리컴퓨트 데이터 (병렬 처리용)
             frame_skip: 프레임 스킵 간격 (1=스킵없음, 2=2프레임당1추론, 3=3프레임당1추론)
             resolution: 출력 해상도 ("720p", "480p", "360p")
+            filename: 출력 파일명 (확장자 제외, None이면 자동 생성)
+            text: 대사 텍스트 (메타데이터 저장용)
+            output_format: 출력 포맷 ("mp4" 또는 "webm")
         """
         import torch
         import copy
@@ -473,6 +476,7 @@ class LipsyncEngine:
             frames_list = preloaded_data['frames_list']
             input_latent_list = preloaded_data['input_latent_list']
             fps = preloaded_data['fps']
+            precomputed = preloaded_data.get('_raw', {})  # 원본 객체 (마스크 캐싱용)
             timings['precompute_load'] = 0.0  # 이미 로드됨
         else:
             print(f"프리컴퓨트 데이터 로드 중: {precomputed_path}")
@@ -841,12 +845,35 @@ class LipsyncEngine:
         else:
             socketio.emit('status', emit_kwargs)
 
-        # 비디오 저장 (병렬 처리를 위해 고유 ID 사용)
+        # 비디오 저장 (파일명 생성)
         t0 = time.time()
         print("비디오 저장 중...")
         unique_id = str(uuid.uuid4())[:8]
-        temp_video = str(output_path / f"temp_output_{unique_id}.mp4")
-        final_video = str(output_path / f"output_{unique_id}.mp4")
+
+        # 출력 포맷 확인 (mp4 또는 webm)
+        output_format = output_format.lower() if output_format else "mp4"
+        if output_format not in ["mp4", "webm"]:
+            output_format = "mp4"
+        file_ext = output_format
+
+        # 파일명 생성: filename이 지정되면 사용, 아니면 text 기반 또는 uuid
+        if filename:
+            # 사용자 지정 파일명 사용 (특수문자 제거)
+            import re
+            safe_filename = re.sub(r'[\\/*?:"<>|]', '', filename)[:50]
+            output_filename = f"{safe_filename}_{unique_id}"
+        elif text:
+            # 텍스트 기반 파일명 생성: 앞 10글자 + uuid
+            import re
+            # 특수문자 제거 및 공백을 언더스코어로
+            safe_text = re.sub(r'[\\/*?:"<>|\n\r]', '', text)
+            safe_text = re.sub(r'\s+', '_', safe_text)[:10]
+            output_filename = f"{safe_text}_{unique_id}"
+        else:
+            output_filename = f"output_{unique_id}"
+
+        temp_video = str(output_path / f"temp_{unique_id}.mp4")
+        final_video = str(output_path / f"{output_filename}.{file_ext}")
 
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         h, w = generated_frames[0].shape[:2]
@@ -889,50 +916,123 @@ class LipsyncEngine:
         if scale_filter:
             print(f"  해상도 스케일링: {resolution}")
 
-        # GPU 인코딩 시도 (NVENC), 실패시 CPU 인코딩
-        ffmpeg_cmd = [
-            'ffmpeg', '-y',
-            '-i', temp_video,
-            '-i', audio_file_path,
-        ]
+        # 메타데이터 준비 (대사 텍스트 저장)
+        metadata_args = []
+        if text:
+            # ffmpeg 메타데이터: title, comment, description
+            # 특수문자 이스케이프 (ffmpeg용)
+            safe_meta_text = text.replace('"', '\\"').replace("'", "\\'")
+            metadata_args = [
+                '-metadata', f'title={safe_meta_text[:100]}',  # 제목 (앞 100자)
+                '-metadata', f'comment={safe_meta_text}',      # 코멘트 (전체 대사)
+                '-metadata', f'description={safe_meta_text}',  # 설명
+            ]
+            print(f"  메타데이터 저장: {text[:30]}...")
 
-        # 스케일 필터 추가
-        if scale_filter:
-            ffmpeg_cmd.extend(['-vf', scale_filter])
-
-        ffmpeg_cmd.extend([
-            '-c:v', 'h264_nvenc',  # NVIDIA GPU 인코더
-            '-preset', 'p1',       # 가장 빠른 프리셋 (p1=fastest, p7=slowest)
-            '-tune', 'ull',        # Ultra Low Latency 튜닝
-            '-rc', 'vbr',          # 가변 비트레이트
-            '-cq', '28',           # 품질 수준 (낮을수록 고품질)
-            '-c:a', 'aac',
-            '-shortest',
-            final_video
-        ])
-
-        nvenc_result = subprocess.run(ffmpeg_cmd, capture_output=True)
-
-        # NVENC 실패시 CPU 인코딩으로 폴백
-        if nvenc_result.returncode != 0:
-            print("  NVENC 실패, CPU 인코딩 사용")
-            ffmpeg_cmd_cpu = [
+        # 포맷에 따라 인코딩 방식 선택
+        if output_format == "webm":
+            # WebM 인코딩 - GPU (AV1 NVENC) 우선, CPU (VP9) 폴백
+            # AV1 NVENC 시도 (RTX 40/50 시리즈 지원)
+            print(f"  WebM 인코딩 시도 중 (AV1 NVENC)...")
+            ffmpeg_cmd_av1 = [
                 'ffmpeg', '-y',
                 '-i', temp_video,
                 '-i', audio_file_path,
             ]
             if scale_filter:
-                ffmpeg_cmd_cpu.extend(['-vf', scale_filter])
-            ffmpeg_cmd_cpu.extend([
-                '-c:v', 'libx264',
-                '-preset', 'ultrafast',  # 가장 빠른 CPU 프리셋
+                ffmpeg_cmd_av1.extend(['-vf', scale_filter])
+            ffmpeg_cmd_av1.extend(metadata_args)
+            ffmpeg_cmd_av1.extend([
+                '-c:v', 'av1_nvenc',     # AV1 NVENC (GPU 인코딩)
+                '-preset', 'p1',          # 가장 빠른 프리셋
+                '-cq', '30',              # 품질 수준
+                '-c:a', 'libopus',        # Opus 오디오
+                '-b:a', '128k',
+                '-shortest',
+                final_video
+            ])
+            av1_result = subprocess.run(ffmpeg_cmd_av1, capture_output=True)
+
+            if av1_result.returncode != 0:
+                # AV1 NVENC 실패 시 VP9 CPU 폴백
+                print(f"  AV1 NVENC 실패, VP9 CPU 인코딩으로 폴백...")
+                ffmpeg_cmd_vp9 = [
+                    'ffmpeg', '-y',
+                    '-i', temp_video,
+                    '-i', audio_file_path,
+                ]
+                if scale_filter:
+                    ffmpeg_cmd_vp9.extend(['-vf', scale_filter])
+                ffmpeg_cmd_vp9.extend(metadata_args)
+                ffmpeg_cmd_vp9.extend([
+                    '-c:v', 'libvpx-vp9',   # VP9 코덱
+                    '-crf', '30',            # 품질
+                    '-b:v', '0',             # CRF 모드
+                    '-cpu-used', '4',        # 빠른 인코딩
+                    '-row-mt', '1',          # 멀티스레드
+                    '-c:a', 'libopus',
+                    '-b:a', '128k',
+                    '-shortest',
+                    final_video
+                ])
+                vp9_result = subprocess.run(ffmpeg_cmd_vp9, capture_output=True)
+                if vp9_result.returncode != 0:
+                    print(f"  WebM 인코딩 오류: {vp9_result.stderr.decode()[:200]}")
+                else:
+                    print("  WebM (VP9 CPU) 인코딩 완료")
+            else:
+                print("  WebM (AV1 NVENC GPU) 인코딩 완료")
+        else:
+            # MP4 (H.264) 인코딩 - GPU 우선, CPU 폴백
+            # GPU 인코딩 시도 (NVENC)
+            ffmpeg_cmd = [
+                'ffmpeg', '-y',
+                '-i', temp_video,
+                '-i', audio_file_path,
+            ]
+
+            # 스케일 필터 추가
+            if scale_filter:
+                ffmpeg_cmd.extend(['-vf', scale_filter])
+
+            # 메타데이터 추가
+            ffmpeg_cmd.extend(metadata_args)
+
+            ffmpeg_cmd.extend([
+                '-c:v', 'h264_nvenc',  # NVIDIA GPU 인코더
+                '-preset', 'p1',       # 가장 빠른 프리셋 (p1=fastest, p7=slowest)
+                '-tune', 'ull',        # Ultra Low Latency 튜닝
+                '-rc', 'vbr',          # 가변 비트레이트
+                '-cq', '28',           # 품질 수준 (낮을수록 고품질)
                 '-c:a', 'aac',
                 '-shortest',
                 final_video
             ])
-            subprocess.run(ffmpeg_cmd_cpu, capture_output=True)
-        else:
-            print("  NVENC GPU 인코딩 사용")
+
+            nvenc_result = subprocess.run(ffmpeg_cmd, capture_output=True)
+
+            # NVENC 실패시 CPU 인코딩으로 폴백
+            if nvenc_result.returncode != 0:
+                print("  NVENC 실패, CPU 인코딩 사용")
+                ffmpeg_cmd_cpu = [
+                    'ffmpeg', '-y',
+                    '-i', temp_video,
+                    '-i', audio_file_path,
+                ]
+                if scale_filter:
+                    ffmpeg_cmd_cpu.extend(['-vf', scale_filter])
+                # 메타데이터 추가
+                ffmpeg_cmd_cpu.extend(metadata_args)
+                ffmpeg_cmd_cpu.extend([
+                    '-c:v', 'libx264',
+                    '-preset', 'ultrafast',  # 가장 빠른 CPU 프리셋
+                    '-c:a', 'aac',
+                    '-shortest',
+                    final_video
+                ])
+                subprocess.run(ffmpeg_cmd_cpu, capture_output=True)
+            else:
+                print("  NVENC GPU 인코딩 사용")
 
         # 임시 오디오 파일 삭제
         if isinstance(audio_input, tuple) and os.path.exists(temp_audio):
@@ -943,6 +1043,24 @@ class LipsyncEngine:
             os.remove(temp_video)
 
         timings['video_encoding'] = time.time() - t0
+
+        # JSON 사이드카 파일 생성 (대사 및 메타정보 저장)
+        if text and os.path.exists(final_video):
+            import json
+            from datetime import datetime
+            json_path = final_video.replace('.mp4', '.json')
+            metadata = {
+                'text': text,
+                'filename': os.path.basename(final_video),
+                'created_at': datetime.now().isoformat(),
+                'resolution': resolution,
+                'duration_sec': round(num_frames / fps, 2),
+                'fps': fps,
+                'frames': num_frames
+            }
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(metadata, f, ensure_ascii=False, indent=2)
+            print(f"  JSON 메타데이터 저장: {json_path}")
 
         # 표준 파일명으로 복사 (기존 코드 호환성)
         standard_output = str(output_path / "output_with_audio.mp4")
@@ -989,8 +1107,10 @@ class LipsyncEngine:
 
         start_time = time.time()
         batch_size = 8  # 스트리밍용 작은 배치
+        lipsync_timing = {}  # 립싱크 내부 타이밍
 
         # 프리컴퓨트 데이터 로드
+        step_start = time.time()
         if preloaded_data:
             coords_list = preloaded_data['coords_list']
             frames_list = preloaded_data['frames_list']
@@ -1004,9 +1124,11 @@ class LipsyncEngine:
             input_latent_list = precomputed.get('input_latent_list', precomputed.get('input_latent_list_cycle'))
             fps = precomputed.get('fps', 25)
 
+        lipsync_timing['data_load'] = time.time() - step_start
         extra_margin = 10
 
         # 오디오 처리
+        step_start = time.time()
         emit_callback('status', {'message': '오디오 처리 중...', 'progress': 5, 'elapsed': time.time() - start_time}, to=sid)
 
         whisper_input_features, librosa_length = self.audio_processor.get_audio_feature(audio_input)
@@ -1022,6 +1144,8 @@ class LipsyncEngine:
         )
 
         num_frames = len(whisper_chunks)
+        lipsync_timing['audio_process'] = time.time() - step_start
+
         if num_frames == 0:
             raise ValueError("오디오에서 프레임을 생성할 수 없습니다")
 
@@ -1051,6 +1175,9 @@ class LipsyncEngine:
             'fps': fps,
             'elapsed': time.time() - start_time
         }, to=sid)
+
+        # UNet 추론 시작
+        step_start = time.time()
 
         # 페이드 프레임 수
         fade_frames = min(8, num_frames // 4)
@@ -1106,7 +1233,10 @@ class LipsyncEngine:
                 'elapsed': time.time() - start_time
             }, to=sid)
 
+        lipsync_timing['unet_inference'] = time.time() - step_start
+
         # 프레임 보간 (frame_skip > 1인 경우)
+        step_start = time.time()
         all_frames = {}
         if frame_skip > 1:
             for i in range(num_frames):
@@ -1127,7 +1257,10 @@ class LipsyncEngine:
         else:
             all_frames = inference_results
 
+        lipsync_timing['interpolation'] = time.time() - step_start
+
         # 블렌딩 및 프레임 전송
+        step_start = time.time()
         emit_callback('status', {'message': '프레임 전송 중...', 'progress': 85, 'elapsed': time.time() - start_time}, to=sid)
 
         for i in range(num_frames):
@@ -1173,6 +1306,8 @@ class LipsyncEngine:
                 'fps': fps
             }, to=sid)
 
+        lipsync_timing['blending_send'] = time.time() - step_start
+
         # 완료 신호
         elapsed = time.time() - start_time
         emit_callback('stream_complete', {
@@ -1181,7 +1316,14 @@ class LipsyncEngine:
             'fps': fps
         }, to=sid)
 
-        print(f"\n스트리밍 립싱크 완료! ({elapsed:.1f}초)")
+        # ========== 립싱크 내부 성능 측정 결과 ==========
+        print(f"\n[립싱크 성능측정] 총 {elapsed:.2f}초, {num_frames}프레임")
+        print(f"  - 데이터 로드: {lipsync_timing.get('data_load', 0):.2f}초")
+        print(f"  - 오디오 처리 (Whisper): {lipsync_timing.get('audio_process', 0):.2f}초")
+        print(f"  - UNet 추론: {lipsync_timing.get('unet_inference', 0):.2f}초")
+        print(f"  - 프레임 보간: {lipsync_timing.get('interpolation', 0):.2f}초")
+        print(f"  - 블렌딩+전송: {lipsync_timing.get('blending_send', 0):.2f}초")
+
         return True
 
 
@@ -1261,6 +1403,12 @@ def get_available_audios():
 def index():
     """메인 페이지"""
     return render_template('index.html')
+
+
+@app.route('/record')
+def record_page():
+    """영상 녹화 페이지"""
+    return render_template('record.html')
 
 
 @app.route('/api/avatars')
@@ -1427,7 +1575,7 @@ def api_queue_position(sid):
 def load_precomputed_data(precomputed_path):
     """프리컴퓨트 데이터 로드 (병렬화용 + 메모리 캐싱)"""
     global precomputed_cache
-    
+
     # 캐시 확인
     if precomputed_path in precomputed_cache:
         print(f"프리컴퓨트 캐시 사용: {precomputed_path}")
@@ -1448,7 +1596,8 @@ def load_precomputed_data(precomputed_path):
         'coords_list': coords_list,
         'frames_list': frames_list,
         'input_latent_list': input_latent_list,
-        'fps': fps
+        'fps': fps,
+        '_raw': precomputed  # 원본 객체 (마스크 캐싱용)
     }
 
 
@@ -1603,9 +1752,11 @@ def generate_tts_audio_streaming(text, engine, voice, chunk_callback, output_pat
                     if len(audio_data.shape) > 1:
                         audio_data = audio_data.mean(axis=1)
 
-                    # 16kHz로 리샘플링 (CosyVoice는 24kHz 출력)
+                    # 16kHz로 리샘플링 (CosyVoice는 24kHz 출력) - scipy가 더 빠름
                     if sr != 16000:
-                        audio_data = librosa.resample(audio_data, orig_sr=sr, target_sr=16000)
+                        from scipy import signal
+                        target_len = int(len(audio_data) * 16000 / sr)
+                        audio_data = signal.resample(audio_data, target_len)
                         sr = 16000
 
                     audio_numpy = audio_data.astype(np.float32)
@@ -1797,9 +1948,11 @@ def generate_tts_audio(text, engine, voice, output_path=None):
                 if len(audio_data.shape) > 1:
                     audio_data = audio_data.mean(axis=1)
 
-                # 16kHz로 리샘플링 (CosyVoice는 24kHz 출력)
+                # 16kHz로 리샘플링 (CosyVoice는 24kHz 출력) - scipy가 더 빠름
                 if sr != 16000:
-                    audio_data = librosa.resample(audio_data, orig_sr=sr, target_sr=16000)
+                    from scipy import signal
+                    target_len = int(len(audio_data) * 16000 / sr)
+                    audio_data = signal.resample(audio_data, target_len)
                     sr = 16000
 
                 audio_numpy = audio_data.astype(np.float32)
@@ -1960,6 +2113,83 @@ def api_generate():
     })
 
 
+@app.route('/api/record', methods=['POST'])
+def api_record():
+    """영상 녹화 API - 텍스트 입력 → TTS → 립싱크 → 영상 생성"""
+    global lipsync_engine
+
+    data = request.json
+    text = data.get('text', '')
+    avatar_path = data.get('avatar_path')
+    tts_engine = data.get('tts_engine', DEFAULT_TTS_ENGINE)
+    tts_voice = data.get('tts_voice', DEFAULT_TTS_VOICE)
+    resolution = data.get('resolution', '480p')
+    filename = data.get('filename')  # 선택적 파일명
+    output_format = data.get('output_format', 'mp4')  # 출력 포맷 (mp4/webm)
+    frame_skip = data.get('frame_skip', 1)  # 프레임 스킵 (1=고품질, 2=빠름, 3=최고속)
+    client_sid = data.get('sid')
+
+    if not text:
+        return jsonify({"success": False, "error": "텍스트가 필요합니다"}), 400
+
+    if not avatar_path:
+        return jsonify({"success": False, "error": "아바타가 필요합니다"}), 400
+
+    if not client_sid:
+        return jsonify({"success": False, "error": "sid가 필요합니다"}), 400
+
+    # 텍스트 길이 제한
+    if len(text) > 1000:
+        return jsonify({"success": False, "error": "텍스트가 너무 깁니다 (최대 1000자)"}), 400
+
+    # 이미 대기 중인지 확인
+    existing_position = generation_queue.get_position(client_sid)
+    if existing_position >= 0:
+        return jsonify({
+            "success": False,
+            "error": "이미 대기열에 있습니다",
+            "position": existing_position
+        }), 400
+
+    # 요청을 큐에 추가
+    request_data = {
+        'avatar_path': avatar_path,
+        'text': text,
+        'tts_engine': tts_engine,
+        'tts_voice': tts_voice,
+        'frame_skip': max(1, min(int(frame_skip), 3)),  # 1~3 범위로 제한
+        'resolution': resolution,
+        'filename': filename,
+        'output_format': output_format,  # 출력 포맷 (mp4/webm)
+        'is_record': True  # 녹화 모드 표시
+    }
+    request_id, position = generation_queue.add_request(client_sid, request_data)
+
+    # 대기 순서 알림
+    if position > 1:
+        socketio.emit('queue_update', {
+            'position': position,
+            'message': f'대기열 {position}번째 - 잠시만 기다려주세요',
+            'request_id': request_id
+        }, to=client_sid)
+    else:
+        socketio.emit('queue_update', {
+            'position': position,
+            'message': '영상 생성을 시작합니다...',
+            'request_id': request_id
+        }, to=client_sid)
+
+    # 큐 처리 워커 시작
+    start_queue_worker()
+
+    return jsonify({
+        "success": True,
+        "status": "queued",
+        "position": position,
+        "request_id": request_id
+    })
+
+
 # 병렬 큐 워커 관리
 queue_manager_thread = None
 queue_manager_running = False
@@ -2062,6 +2292,8 @@ def process_generation_request(request_data):
     tts_voice = request_data.get('tts_voice')
     frame_skip = request_data.get('frame_skip', 1)
     resolution = request_data.get('resolution', '720p')
+    filename = request_data.get('filename')  # 사용자 지정 파일명
+    output_format = request_data.get('output_format', 'mp4')  # 출력 포맷 (mp4/webm)
 
     start_time = time.time()
 
@@ -2094,7 +2326,16 @@ def process_generation_request(request_data):
         socketio.emit('cancelled', {'message': '생성이 취소되었습니다'}, to=sid)
         return
 
-    # 2. 립싱크 생성
+    # 2. 프리컴퓨트 데이터 로드 (캐싱 적용)
+    socketio.emit('status', {
+        'message': '아바타 데이터 로드 중...',
+        'progress': 8,
+        'elapsed': time.time() - start_time
+    }, to=sid)
+
+    precomputed_data = load_precomputed_data(avatar_path)
+
+    # 3. 립싱크 생성
     skip_info = f" (frame_skip={frame_skip})" if frame_skip > 1 else ""
     socketio.emit('status', {
         'message': f'립싱크 생성 시작...{skip_info}',
@@ -2107,8 +2348,12 @@ def process_generation_request(request_data):
         (audio_numpy, sample_rate),
         output_dir="results/realtime",
         sid=sid,
+        preloaded_data=precomputed_data,  # 캐시된 데이터 전달
         frame_skip=frame_skip,
-        resolution=resolution
+        resolution=resolution,
+        filename=filename,
+        text=text,  # 메타데이터 저장용
+        output_format=output_format  # 출력 포맷 (mp4/webm)
     )
 
     # 취소 확인
@@ -2704,6 +2949,14 @@ def api_generate_streaming():
             import soundfile as sf
             import io
 
+            # ========== 성능 측정 시작 ==========
+            timing_log = {}
+            step_start = time.time()
+
+            print(f"\n{'='*60}")
+            print(f"[성능측정] 면접 스트리밍 시작 - TTS엔진: {tts_engine}")
+            print(f"{'='*60}")
+
             # 1. TTS 스트리밍 생성 (청크를 받는 대로 전송)
             engine_name = TTS_ENGINES.get(tts_engine, {}).get('name', tts_engine)
             socketio.emit('status', {'message': f'TTS 스트리밍 시작 ({engine_name})...', 'progress': 0, 'elapsed': 0}, to=sid)
@@ -2741,11 +2994,16 @@ def api_generate_streaming():
             # TTS 스트리밍 생성
             tts_result = generate_tts_audio_streaming(text, tts_engine, tts_voice, tts_chunk_callback)
 
+            timing_log['tts'] = time.time() - step_start
+            print(f"[성능측정] 1. TTS 생성: {timing_log['tts']:.2f}초 ({tts_engine})")
+
             if tts_result is None:
                 socketio.emit('error', {'message': f'TTS 생성 실패 ({engine_name})'}, to=sid)
                 return
 
             audio_numpy, sample_rate = tts_result
+            audio_duration = len(audio_numpy) / sample_rate
+            print(f"[성능측정]    - 오디오 길이: {audio_duration:.2f}초")
 
             if sid in client_sessions and client_sessions[sid]['cancelled']:
                 socketio.emit('cancelled', {'message': '생성이 취소되었습니다'}, to=sid)
@@ -2759,6 +3017,7 @@ def api_generate_streaming():
             }, to=sid)
 
             # 3. 스트리밍 립싱크 생성
+            step_start = time.time()
             skip_info = f" (frame_skip={frame_skip})" if frame_skip > 1 else ""
             socketio.emit('status', {
                 'message': f'스트리밍 립싱크 시작...{skip_info}',
@@ -2773,6 +3032,20 @@ def api_generate_streaming():
                 emit_callback=socketio.emit,
                 frame_skip=frame_skip
             )
+
+            timing_log['lipsync'] = time.time() - step_start
+            total_time = time.time() - start_time
+
+            # ========== 성능 측정 결과 출력 ==========
+            print(f"\n{'='*60}")
+            print(f"[성능측정] 면접 스트리밍 완료 - 총 {total_time:.2f}초")
+            print(f"{'='*60}")
+            print(f"  1. TTS 생성 ({tts_engine}): {timing_log.get('tts', 0):.2f}초")
+            print(f"  2. 립싱크 생성: {timing_log.get('lipsync', 0):.2f}초")
+            print(f"{'='*60}")
+            print(f"  오디오 길이: {audio_duration:.2f}초")
+            print(f"  실시간 비율: {total_time/audio_duration:.2f}x (1.0 = 실시간)")
+            print(f"{'='*60}\n")
 
             if sid in client_sessions and client_sessions[sid]['cancelled']:
                 socketio.emit('cancelled', {'message': '생성이 취소되었습니다'}, to=sid)
