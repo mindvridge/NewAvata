@@ -232,14 +232,33 @@
             white-space: nowrap;
         }
 
-        /* 비디오 영역 */
+        /* 비디오 영역 - 해상도별 크기 (비율 1.75:1 유지) */
         .video-container {
             position: relative;
             background: #000;
             border-radius: 24px;
             overflow: hidden;
             width: 100%;
-            height: 650px;
+            /* 기본 720p 크기 */
+            max-width: 1268px;
+            height: 724px;
+            margin: 0 auto;
+            transition: max-width 0.3s ease, height 0.3s ease;
+        }
+
+        .video-container.resolution-720p {
+            max-width: 1268px;
+            height: 724px;
+        }
+
+        .video-container.resolution-480p {
+            max-width: 848px;
+            height: 484px;
+        }
+
+        .video-container.resolution-360p {
+            max-width: 632px;
+            height: 360px;
         }
 
         .video-container video {
@@ -253,18 +272,20 @@
         }
 
         #idleVideo, #resultVideo, #streamCanvas {
-            transition: none !important;
             animation: none !important;
         }
 
         #idleVideo {
             z-index: 2;
-            visibility: visible;
+            opacity: 1 !important;
+            /* idle은 항상 보이고 재생 - 절대 숨기지 않음 */
         }
 
         #resultVideo {
             z-index: 3;
-            visibility: hidden;
+            opacity: 0;
+            transition: opacity 0.25s ease-in-out;
+            /* resultVideo가 위에 오버레이되어 idle을 가림 - 부드러운 전환 */
         }
 
         #streamCanvas {
@@ -614,9 +635,9 @@
                     <div class="form-group">
                         <label>출력 해상도</label>
                         <select id="resolutionSelect">
-                            <option value="720p">720p (고품질)</option>
+                            <option value="720p" selected>720p (고품질)</option>
                             <option value="480p">480p (균형)</option>
-                            <option value="360p" selected>360p (빠른 응답)</option>
+                            <option value="360p">360p (빠른 응답)</option>
                         </select>
                     </div>
 
@@ -677,8 +698,8 @@
             <div class="panel">
                 <h2>면접관</h2>
 
-                <div class="video-container">
-                    <video id="idleVideo" src="/assets/images/a24ca21b-0d02-49f0-99a7-d737c5ca6058.mp4" loop muted autoplay playsinline></video>
+                <div class="video-container resolution-720p">
+                    <video id="idleVideo" src="/assets/720p/기본.mp4" loop muted autoplay playsinline></video>
                     <canvas id="streamCanvas"></canvas>
                     <video id="resultVideo" playsinline></video>
                     <audio id="streamAudio" style="display: none;"></audio>
@@ -733,6 +754,113 @@
         let streamCtx = null;  // Canvas context
         let streamFps = 25;  // 스트리밍 FPS
         let clientSid = null;  // 클라이언트 세션 ID
+
+        // 대기 중 영상 관련 변수 (끄덕 + 서류보기)
+        // 해상도별 끄덕 영상 (해상도별 폴더가 없으면 기본 경로 사용)
+        const NOD_VIDEOS_BASE = ['끄덕.mp4', '끄덕2.mp4', '서류보기.mp4', '서류보기2.mp4'];
+        let isNodPlaying = false;  // 대기 영상 재생 중 플래그
+        let nodVideoElement = null;  // 대기 비디오 요소
+        let shouldStopNod = false;  // 대기 영상 중지 플래그
+
+        // 현재 해상도에 맞는 영상 경로 반환
+        function getResolutionVideoPath(filename) {
+            const resolution = document.getElementById('resolutionSelect').value;
+            // 해상도별 경로 시도, 없으면 기본 경로
+            return `/assets/${resolution}/${filename}`;
+        }
+
+        // 해상도별 끄덕 영상 목록 가져오기
+        function getNodVideos() {
+            const resolution = document.getElementById('resolutionSelect').value;
+            return NOD_VIDEOS_BASE.map(v => `/assets/${resolution}/${v}`);
+        }
+
+        // 끄덕 영상 시작 함수
+        function startNodVideo() {
+            if (isNodPlaying || isVideoPlaying) return;
+
+            const idleVideo = document.getElementById('idleVideo');
+            const resultVideo = document.getElementById('resultVideo');
+
+            // 현재 해상도에 맞는 끄덕 영상 목록
+            const nodVideos = getNodVideos();
+            // 랜덤으로 끄덕 영상 선택
+            const randomNodVideo = nodVideos[Math.floor(Math.random() * nodVideos.length)];
+            console.log('Starting nod video:', randomNodVideo);
+
+            isNodPlaying = true;
+            shouldStopNod = false;
+
+            // resultVideo를 끄덕 영상으로 사용
+            resultVideo.src = randomNodVideo + '?' + Date.now();
+            resultVideo.muted = true;  // 끄덕 영상은 음소거
+            resultVideo.style.opacity = '0';
+
+            resultVideo.oncanplaythrough = () => {
+                resultVideo.oncanplaythrough = null;
+                if (shouldStopNod) {
+                    // 립싱크가 준비되어 중지 요청이 온 경우
+                    isNodPlaying = false;
+                    return;
+                }
+                resultVideo.style.opacity = '1';
+                resultVideo.play().catch(err => {
+                    console.error('Nod video play failed:', err);
+                    isNodPlaying = false;
+                });
+            };
+
+            resultVideo.onended = () => {
+                if (shouldStopNod || !isGenerating) {
+                    // 립싱크 준비됨 또는 생성 취소 - 끄덕 중지
+                    resultVideo.style.opacity = '0';
+                    isNodPlaying = false;
+                    return;
+                }
+
+                // 계속 생성 중이면 다른 끄덕 영상 랜덤 재생
+                const nodVideos = getNodVideos();
+                const nextNodVideo = nodVideos[Math.floor(Math.random() * nodVideos.length)];
+                console.log('Continuing nod video:', nextNodVideo);
+                resultVideo.src = nextNodVideo + '?' + Date.now();
+                resultVideo.load();
+
+                resultVideo.oncanplaythrough = () => {
+                    resultVideo.oncanplaythrough = null;
+                    if (shouldStopNod) {
+                        isNodPlaying = false;
+                        return;
+                    }
+                    resultVideo.play().catch(err => {
+                        console.error('Nod video play failed:', err);
+                        isNodPlaying = false;
+                    });
+                };
+            };
+
+            resultVideo.load();
+        }
+
+        // 끄덕 영상 중지 및 립싱크로 전환 함수
+        function stopNodAndPlayLipsync(videoUrl) {
+            shouldStopNod = true;
+            const resultVideo = document.getElementById('resultVideo');
+
+            // 현재 끄덕 영상이 재생 중이면
+            if (isNodPlaying) {
+                console.log('Stopping nod video, switching to lipsync');
+                // 페이드 아웃 후 립싱크 전환
+                resultVideo.style.opacity = '0';
+
+                setTimeout(() => {
+                    isNodPlaying = false;
+                    resultVideo.pause();
+                    resultVideo.onended = null;
+                    resultVideo.oncanplaythrough = null;
+                    // 립싱크 비디오 로드 및 재생은 complete 핸들러에서 처리
+                }, 250);
+            }
+        }
 
         // LLM 상태 확인 함수
         async function checkLLMStatus() {
@@ -863,15 +991,42 @@
                 document.getElementById('elapsedTime').textContent = `완료: ${data.total_time.toFixed(1)}초`;
             }
 
-            // 이미 비디오가 재생 중이면 무시 (중복 방지)
-            if (isVideoPlaying) {
-                console.log('Video already playing, ignoring duplicate complete event');
+            // 이미 립싱크 비디오가 재생 중이면 무시 (중복 방지)
+            if (isVideoPlaying && !isNodPlaying) {
+                console.log('Lipsync video already playing, ignoring duplicate complete event');
                 return;
             }
-            isVideoPlaying = true;
 
             const idleVideo = document.getElementById('idleVideo');
             const resultVideo = document.getElementById('resultVideo');
+            const videoUrl = data.video_url || '/video/output_with_audio.mp4';
+
+            // 끄덕 영상 중지 플래그 설정
+            shouldStopNod = true;
+
+            // 끄덕 영상이 재생 중이면 페이드 아웃 후 립싱크 전환
+            if (isNodPlaying) {
+                console.log('Stopping nod video, transitioning to lipsync');
+                resultVideo.style.opacity = '0';
+
+                setTimeout(() => {
+                    isNodPlaying = false;
+                    resultVideo.pause();
+                    resultVideo.onended = null;
+                    resultVideo.oncanplaythrough = null;
+
+                    // 립싱크 비디오 로드 및 재생
+                    loadAndPlayLipsync(resultVideo, idleVideo, videoUrl, data);
+                }, 250);
+            } else {
+                // 끄덕 영상이 없으면 바로 립싱크 재생
+                loadAndPlayLipsync(resultVideo, idleVideo, videoUrl, data);
+            }
+        });
+
+        // 립싱크 비디오 로드 및 재생 함수
+        function loadAndPlayLipsync(resultVideo, idleVideo, videoUrl, data) {
+            isVideoPlaying = true;
 
             // 이전 재생 중인 비디오 정리
             resultVideo.pause();
@@ -883,18 +1038,25 @@
             // idle 비디오는 항상 음소거 상태 유지
             idleVideo.muted = true;
 
-            // resultVideo 준비
-            resultVideo.style.visibility = 'hidden';
+            // resultVideo 준비 (opacity 기반 전환)
+            resultVideo.style.opacity = '0';
             resultVideo.muted = false;
-            // 서버에서 받은 video_url 사용 (없으면 기존 경로 사용)
-            const videoUrl = data.video_url || '/video/output_with_audio.mp4';
+            // idle 비디오는 계속 재생 (백그라운드)
             resultVideo.src = videoUrl + '?' + Date.now();
+
+            // 음성 길이 로그 (아바타 선택은 백엔드에서 처리)
+            const audioDuration = data.audio_duration || 0;
+            console.log(`[립싱크] 음성 길이: ${audioDuration.toFixed(1)}초 → 영상 끝까지 재생 후 전환`);
+
+            let videoStartTime = null;
 
             // 비디오가 충분히 버퍼링되면
             resultVideo.oncanplaythrough = () => {
                 resultVideo.oncanplaythrough = null;
-                // 립싱크를 보이게 하고 재생 시작 (z-index가 높아서 idle 위에 표시됨)
-                resultVideo.style.visibility = 'visible';
+                // 립싱크를 보이게 하고 재생 시작 (idle은 뒤에서 계속 재생)
+                resultVideo.style.opacity = '1';
+                videoStartTime = Date.now();  // 재생 시작 시간 기록
+                // idle은 opacity 1 유지 - 뒤에서 계속 재생됨
                 resultVideo.play().catch(err => {
                     console.error('Video play failed:', err);
                     isVideoPlaying = false;
@@ -904,23 +1066,37 @@
             // 비디오 로드 시작
             resultVideo.load();
 
-            // 립싱크 비디오 완전 종료 후 정리
+            // 립싱크 비디오 종료 처리 함수
+            const LAST_FRAME_HOLD_TIME = 500;  // 마지막 프레임 유지 시간 (ms)
+
+            const handleVideoEnd = () => {
+                // 마지막 프레임에서 잠시 대기 후 페이드 아웃
+                // (비디오는 이미 끝났으므로 마지막 프레임에서 정지 상태)
+                setTimeout(() => {
+                    // idle 영상을 처음으로 리셋 (립싱크 끝 프레임과 idle 첫 프레임 일치)
+                    idleVideo.currentTime = 0;
+
+                    // resultVideo 페이드 아웃 (idle은 이미 뒤에서 재생 중)
+                    resultVideo.style.opacity = '0';
+                    isVideoPlaying = false;
+
+                    // 페이드 완료 후 정리 (300ms 후 - 전환 애니메이션보다 길게)
+                    setTimeout(() => {
+                        resultVideo.pause();
+                        resultVideo.muted = true;
+                        resultVideo.currentTime = 0;
+                        // src 제거하지 않음 - 검정색 깜박임 방지
+                    }, 300);
+                }, LAST_FRAME_HOLD_TIME);
+            };
+
+            // 립싱크 비디오 완전 종료 후 부드러운 전환
             resultVideo.onended = () => {
-                resultVideo.pause();
-                resultVideo.muted = true;
-                resultVideo.currentTime = 0;
-                resultVideo.style.visibility = 'hidden';
-                resultVideo.src = '';
-                isVideoPlaying = false;
-                
-                // idle 비디오 다시 표시
-                idleVideo.style.visibility = 'visible';
-                // idle 비디오가 멈춰있으면 재생 시작
-                if (idleVideo.paused) {
-                    idleVideo.play().catch(err => {
-                        console.error('Idle video play failed:', err);
-                    });
-                }
+                const elapsedTime = videoStartTime ? (Date.now() - videoStartTime) / 1000 : 0;
+                console.log(`[립싱크] 영상 종료 - 재생 시간: ${elapsedTime.toFixed(1)}초`);
+
+                // 영상 끝나면 바로 전환
+                handleVideoEnd();
             };
 
             // 통계 표시
@@ -928,47 +1104,55 @@
             if (data.total_time !== undefined) {
                 document.getElementById('statTotal').textContent = data.total_time.toFixed(1);
             }
-        });
+        }
 
         socket.on('error', (data) => {
+            // 끄덕 영상 중지
+            shouldStopNod = true;
+            isNodPlaying = false;
             isGenerating = false;
             updateUIState(false);
             document.getElementById('queueStatus').classList.remove('visible');
             document.getElementById('statusText').textContent = '오류: ' + data.message;
             addMessage('system', '오류가 발생했습니다: ' + data.message);
-            
-            // 에러 발생 시 idle 비디오 다시 표시
+
+            // 에러 발생 시 resultVideo/canvas 숨기기 (idle은 CSS로 항상 opacity 1)
             const idleVideo = document.getElementById('idleVideo');
             const resultVideo = document.getElementById('resultVideo');
             const canvas = document.getElementById('streamCanvas');
-            resultVideo.style.visibility = 'hidden';
+            resultVideo.style.opacity = '0';
             canvas.style.visibility = 'hidden';
-            idleVideo.style.visibility = 'visible';
+            // idle은 !important로 항상 보임 - opacity 변경 불필요
             if (idleVideo.paused) {
                 idleVideo.play().catch(err => {
                     console.error('Idle video play failed:', err);
                 });
             }
+            isVideoPlaying = false;
         });
 
         socket.on('cancelled', (data) => {
+            // 끄덕 영상 중지
+            shouldStopNod = true;
+            isNodPlaying = false;
             isGenerating = false;
             updateUIState(false);
             document.getElementById('queueStatus').classList.remove('visible');
             document.getElementById('statusText').textContent = data.message;
-            
-            // 취소 시 idle 비디오 다시 표시
-            const idleVideo = document.getElementById('idleVideo');
+
+            // 취소 시 resultVideo/canvas 숨기기 (idle은 CSS로 항상 opacity 1)
             const resultVideo = document.getElementById('resultVideo');
             const canvas = document.getElementById('streamCanvas');
-            resultVideo.style.visibility = 'hidden';
+            const idleVideo = document.getElementById('idleVideo');
+            resultVideo.style.opacity = '0';
             canvas.style.visibility = 'hidden';
-            idleVideo.style.visibility = 'visible';
+            // idle은 !important로 항상 보임 - opacity 변경 불필요
             if (idleVideo.paused) {
                 idleVideo.play().catch(err => {
                     console.error('Idle video play failed:', err);
                 });
             }
+            isVideoPlaying = false;
         });
 
         // ========== 스트리밍 이벤트 ==========
@@ -1137,13 +1321,11 @@
             isStreamPlaying = true;
 
             const canvas = document.getElementById('streamCanvas');
-            const idleVideo = document.getElementById('idleVideo');
 
             console.log('Starting stream playback, buffer:', streamFrameBuffer.length);
 
-            // Canvas 표시
+            // Canvas 표시 (idle은 CSS로 항상 opacity 1 유지)
             canvas.style.visibility = 'visible';
-            idleVideo.style.visibility = 'hidden';
 
             document.getElementById('statusText').textContent = '재생 중...';
 
@@ -1156,15 +1338,21 @@
                 isStreamPlaying = false;
             });
 
-            // 오디오 종료 시 idle로 복귀
+            // 오디오 종료 시 canvas 숨기기 (idle은 CSS로 항상 opacity 1)
             streamAudio.onended = () => {
                 console.log('Stream audio ended');
                 isStreamPlaying = false;
 
+                const idleVideo = document.getElementById('idleVideo');
+                // idle 비디오 재생 확인
+                if (idleVideo.paused) {
+                    idleVideo.play().catch(err => console.error('Idle play failed:', err));
+                }
+
+                // canvas 숨기기 (idle은 이미 보임)
                 setTimeout(() => {
                     if (!isStreamPlaying) {
                         canvas.style.visibility = 'hidden';
-                        idleVideo.style.visibility = 'visible';
                     }
                 }, 100);
             };
@@ -1210,18 +1398,20 @@
             document.getElementById('statTotal').textContent = elapsed.toFixed(1);
             document.getElementById('statusText').textContent =
                 `완료 (${data.total_frames}프레임, ${elapsed.toFixed(1)}초)`;
-            
-            // 스트리밍 완료 후 idle 비디오 다시 표시
+
+            // 스트리밍 완료 후 canvas 숨기기 (idle은 CSS로 항상 opacity 1)
             const canvas = document.getElementById('streamCanvas');
             const idleVideo = document.getElementById('idleVideo');
-            canvas.style.visibility = 'hidden';
-            idleVideo.style.visibility = 'visible';
             // idle 비디오가 멈춰있으면 재생 시작
             if (idleVideo.paused) {
                 idleVideo.play().catch(err => {
                     console.error('Idle video play failed:', err);
                 });
             }
+            // idle은 !important로 항상 보임 - opacity 변경 불필요
+            setTimeout(() => {
+                canvas.style.visibility = 'hidden';
+            }, 100);
         });
 
         socket.on('stream_error', (data) => {
@@ -1231,10 +1421,19 @@
             isStreamPlaying = false;
             updateUIState(false);
 
+            // canvas 숨기기 (idle은 CSS로 항상 opacity 1)
             const canvas = document.getElementById('streamCanvas');
             const idleVideo = document.getElementById('idleVideo');
-            canvas.style.visibility = 'hidden';
-            idleVideo.style.visibility = 'visible';
+            // idle 비디오가 멈춰있으면 재생 시작
+            if (idleVideo.paused) {
+                idleVideo.play().catch(err => {
+                    console.error('Idle video play failed:', err);
+                });
+            }
+            // idle은 !important로 항상 보임 - opacity 변경 불필요
+            setTimeout(() => {
+                canvas.style.visibility = 'hidden';
+            }, 100);
 
             document.getElementById('statusText').textContent = '오류: ' + data.message;
             addMessage('system', '스트리밍 오류: ' + data.message);
@@ -1254,9 +1453,12 @@
                 const avatarsRes = await fetch('/api/avatars');
                 const avatars = await avatarsRes.json();
                 const avatarSelect = document.getElementById('avatarSelect');
-                avatarSelect.innerHTML = avatars.length > 0
-                    ? avatars.map(a => `<option value="${a.path}">${a.name}</option>`).join('')
-                    : '<option value="">사전 계산된 아바타 없음</option>';
+                // '자동 선택' 옵션을 기본값으로 추가
+                let avatarOptions = '<option value="auto" selected>자동 선택 (텍스트 길이 기반)</option>';
+                if (avatars.length > 0) {
+                    avatarOptions += avatars.map(a => `<option value="${a.path}">${a.name}</option>`).join('');
+                }
+                avatarSelect.innerHTML = avatarOptions;
 
                 // TTS 엔진 로드
                 const enginesRes = await fetch('/api/tts_engines');
@@ -1338,6 +1540,9 @@
             document.getElementById('progressFill').style.width = '0%';
             document.getElementById('statusText').textContent = 'LLM 응답 생성 중...';
             document.getElementById('elapsedTime').textContent = '';
+
+            // 끄덕 영상 시작 (사용자가 대답 후 대기 중)
+            startNodVideo();
 
             llmStartTime = Date.now();
 
@@ -1621,12 +1826,53 @@
         // 사용자 상호작용 후 idle 비디오 재생 시도
         document.addEventListener('click', () => {
             const idleVideo = document.getElementById('idleVideo');
-            if (idleVideo && idleVideo.paused && idleVideo.style.visibility !== 'hidden') {
+            if (idleVideo && idleVideo.paused && idleVideo.style.opacity !== '0') {
                 idleVideo.play().catch(err => {
                     console.error('Idle video play failed:', err);
                 });
             }
         }, { once: true });
+
+        // 해상도 변경 시 idle 비디오 및 컨테이너 크기 업데이트
+        document.getElementById('resolutionSelect').addEventListener('change', function() {
+            const resolution = this.value;
+            const idleVideo = document.getElementById('idleVideo');
+            const videoContainer = document.querySelector('.video-container');
+            const currentTime = idleVideo.currentTime;
+            const wasPlaying = !idleVideo.paused;
+
+            // 비디오 컨테이너 크기 변경 (비율 1.75:1 유지)
+            videoContainer.classList.remove('resolution-720p', 'resolution-480p', 'resolution-360p');
+            videoContainer.classList.add(`resolution-${resolution}`);
+            console.log(`[해상도 변경] 컨테이너 크기: ${resolution}`);
+
+            // 해상도별 idle 영상 경로
+            const newSrc = `/assets/${resolution}/기본.mp4`;
+            console.log(`[해상도 변경] ${resolution} → ${newSrc}`);
+
+            // 영상 변경 (현재 재생 시간 유지)
+            idleVideo.src = newSrc;
+            idleVideo.load();
+
+            idleVideo.onloadeddata = () => {
+                idleVideo.currentTime = currentTime;
+                if (wasPlaying) {
+                    idleVideo.play().catch(err => {
+                        console.error('Idle video play failed after resolution change:', err);
+                    });
+                }
+            };
+
+            // 해상도별 영상이 없으면 기본 경로로 폴백
+            idleVideo.onerror = () => {
+                console.log(`[해상도 변경] ${resolution} 영상 없음, 기본 경로 사용`);
+                idleVideo.src = '/assets/기본.mp4';
+                idleVideo.load();
+                idleVideo.onloadeddata = () => {
+                    if (wasPlaying) idleVideo.play().catch(() => {});
+                };
+            };
+        });
     </script>
 </body>
 </html>
