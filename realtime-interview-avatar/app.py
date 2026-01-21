@@ -65,6 +65,17 @@ tts_audio_cache = {}  # {text_hash: (audio_numpy, sample_rate, timestamp)}
 TTS_CACHE_MAX_SIZE = 50  # 최대 캐시 항목 수
 TTS_CACHE_TTL = 3600  # 캐시 유효 시간 (1시간)
 
+# 중앙 크롭 설정 (면접관 중앙 영역만 전송)
+# 원본 영상: 1268x724, 3명 면접관 중 중앙만 크롭
+CENTER_CROP_ENABLED = True  # 중앙 크롭 활성화 여부
+CENTER_CROP_RATIO = (0.32, 0.68)  # 좌측 32% ~ 우측 68% (중앙 36%)
+# 해상도별 크롭 좌표 (x_start, x_end, width, height)
+CENTER_CROP_COORDS = {
+    "720p": (405, 862, 457, 724),   # 1268 * 0.32 ~ 1268 * 0.68
+    "480p": (271, 576, 305, 484),   # 848 * 0.32 ~ 848 * 0.68
+    "360p": (202, 429, 227, 360),   # 632 * 0.32 ~ 632 * 0.68
+}
+
 # 클라이언트별 상태 관리 (멀티 브라우저 지원)
 client_sessions = {}  # {sid: {'cancelled': False, 'start_time': None, 'generating': False}}
 generation_lock = threading.Lock()  # 동시 생성 방지 락
@@ -960,6 +971,16 @@ class LipsyncEngine:
         }
         scale_filter = scale_filters.get(resolution)
 
+        # 중앙 크롭 필터 (면접관 중앙 영역만 출력)
+        center_crop = center_crop if 'center_crop' in dir() else CENTER_CROP_ENABLED
+        crop_filter = None
+        crop_coords = None
+        if center_crop and resolution in CENTER_CROP_COORDS:
+            x_start, x_end, crop_w, crop_h = CENTER_CROP_COORDS[resolution]
+            crop_filter = f"crop={crop_w}:{crop_h}:{x_start}:0"
+            crop_coords = CENTER_CROP_COORDS[resolution]
+            print(f"  중앙 크롭: {resolution} → {crop_w}x{crop_h} (x={x_start})")
+
         if scale_filter:
             print(f"  해상도 스케일링: {resolution}")
 
@@ -986,10 +1007,12 @@ class LipsyncEngine:
                 '-i', temp_video,
                 '-i', audio_file_path,
             ]
-            # 비디오 필터: 스케일 + 마지막 프레임 150ms 연장
+            # 비디오 필터: 스케일 + 크롭 + 마지막 프레임 150ms 연장
             vf_parts = ['tpad=stop_mode=clone:stop_duration=0.15']
             if scale_filter:
                 vf_parts.append(scale_filter)
+            if crop_filter:
+                vf_parts.append(crop_filter)
             ffmpeg_cmd_av1.extend(['-vf', ','.join(vf_parts)])
             # 오디오 필터: 앞에 120ms 무음 추가 (립싱크 동기화)
             ffmpeg_cmd_av1.extend(['-af', 'adelay=120|120'])
@@ -1013,10 +1036,12 @@ class LipsyncEngine:
                     '-i', temp_video,
                     '-i', audio_file_path,
                 ]
-                # 비디오 필터: 스케일 + 마지막 프레임 150ms 연장
+                # 비디오 필터: 스케일 + 크롭 + 마지막 프레임 150ms 연장
                 vf_parts = ['tpad=stop_mode=clone:stop_duration=0.15']
                 if scale_filter:
                     vf_parts.append(scale_filter)
+                if crop_filter:
+                    vf_parts.append(crop_filter)
                 ffmpeg_cmd_vp9.extend(['-vf', ','.join(vf_parts)])
                 # 오디오 필터: 앞에 120ms 무음 추가 (립싱크 동기화)
                 ffmpeg_cmd_vp9.extend(['-af', 'adelay=120|120'])
@@ -1048,12 +1073,14 @@ class LipsyncEngine:
                 '-i', audio_file_path,
             ]
 
-            # 비디오 필터: 스케일 + 마지막 프레임 150ms 연장
+            # 비디오 필터: 스케일 + 크롭 + 마지막 프레임 150ms 연장
             vf_parts = ['tpad=stop_mode=clone:stop_duration=0.15']
             if scale_filter:
                 vf_parts.append(scale_filter)
+            if crop_filter:
+                vf_parts.append(crop_filter)
             ffmpeg_cmd.extend(['-vf', ','.join(vf_parts)])
-            
+
             # 오디오 필터: 앞에 120ms 무음 추가 (립싱크 동기화)
             ffmpeg_cmd.extend(['-af', 'adelay=120|120'])
 
@@ -1147,10 +1174,13 @@ class LipsyncEngine:
         print(f"    - UNet 추론: {timings.get('unet_inference', 0):.2f}초")
         print(f"    - 블렌딩: {timings.get('blending', 0):.2f}초")
         print(f"    - 비디오 인코딩: {timings.get('video_encoding', 0):.2f}초")
+        if crop_coords:
+            print(f"    - 중앙 크롭: {crop_coords[2]}x{crop_coords[3]} (x={crop_coords[0]})")
         print(f"출력: {final_video}")
         print(f"표준 출력: {standard_output}")
 
-        return standard_output
+        # 반환값: (비디오 경로, 크롭 좌표) 또는 비디오 경로만 (하위 호환)
+        return (standard_output, crop_coords) if crop_coords else standard_output
 
     def generate_lipsync_streaming(self, precomputed_path, audio_input, sid, emit_callback, preloaded_data=None, frame_skip=1):
         """
@@ -2929,7 +2959,7 @@ def process_generation_request(request_data):
         'elapsed': time.time() - start_time
     }, to=sid)
 
-    output_video = lipsync_engine.generate_lipsync(
+    lipsync_result = lipsync_engine.generate_lipsync(
         avatar_path,
         (audio_numpy, sample_rate),
         output_dir="results/realtime",
@@ -2942,6 +2972,13 @@ def process_generation_request(request_data):
         output_format=output_format  # 출력 포맷 (mp4/webm)
     )
 
+    # 반환값 처리 (튜플이면 크롭 좌표 포함)
+    if isinstance(lipsync_result, tuple):
+        output_video, crop_coords = lipsync_result
+    else:
+        output_video = lipsync_result
+        crop_coords = None
+
     # 취소 확인
     if request_data.get('cancelled'):
         socketio.emit('cancelled', {'message': '생성이 취소되었습니다'}, to=sid)
@@ -2952,12 +2989,21 @@ def process_generation_request(request_data):
         socketio.emit('status', {'message': '완료!', 'progress': 100, 'elapsed': elapsed}, to=sid)
         # 실제 생성된 파일 경로에서 파일명 추출
         video_filename = os.path.basename(output_video)
-        socketio.emit('complete', {
+        complete_data = {
             'video_path': output_video,
             'video_url': f'/video/{video_filename}',
             'elapsed': elapsed,
             'audio_duration': audio_duration  # 음성 길이 전달 (영상 유지 시간 계산용)
-        }, to=sid)
+        }
+        # 크롭 좌표가 있으면 추가 (클라이언트에서 오버레이 위치 계산용)
+        if crop_coords:
+            complete_data['crop_coords'] = {
+                'x': crop_coords[0],
+                'width': crop_coords[2],
+                'height': crop_coords[3],
+                'center_crop': True
+            }
+        socketio.emit('complete', complete_data, to=sid)
     else:
         socketio.emit('error', {'message': '립싱크 생성 실패'}, to=sid)
 

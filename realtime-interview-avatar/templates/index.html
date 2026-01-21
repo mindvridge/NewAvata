@@ -286,6 +286,16 @@
             opacity: 0;
             transition: opacity 0.25s ease-in-out;
             /* resultVideo가 위에 오버레이되어 idle을 가림 - 부드러운 전환 */
+            /* 크롭 모드: 중앙 정렬 (left 값은 JS에서 동적 설정) */
+        }
+
+        /* 크롭 모드일 때 resultVideo 위치 (중앙 면접관 영역) */
+        #resultVideo.center-crop {
+            left: 50%;
+            transform: translateX(-50%);
+            /* 크롭된 영상은 원본보다 좁으므로 width는 자동 */
+            width: auto;
+            height: 100%;
         }
 
         #streamCanvas {
@@ -1038,6 +1048,15 @@
             // idle 비디오는 항상 음소거 상태 유지
             idleVideo.muted = true;
 
+            // 크롭 모드 처리 (서버에서 중앙 크롭된 영상)
+            const cropCoords = data.crop_coords;
+            if (cropCoords && cropCoords.center_crop) {
+                resultVideo.classList.add('center-crop');
+                console.log(`[립싱크] 중앙 크롭 모드: ${cropCoords.width}x${cropCoords.height} (x=${cropCoords.x})`);
+            } else {
+                resultVideo.classList.remove('center-crop');
+            }
+
             // resultVideo 준비 (opacity 기반 전환)
             resultVideo.style.opacity = '0';
             resultVideo.muted = false;
@@ -1085,6 +1104,7 @@
                         resultVideo.pause();
                         resultVideo.muted = true;
                         resultVideo.currentTime = 0;
+                        resultVideo.classList.remove('center-crop');  // 크롭 클래스 제거
                         // src 제거하지 않음 - 검정색 깜박임 방지
                     }, 300);
                 }, LAST_FRAME_HOLD_TIME);
