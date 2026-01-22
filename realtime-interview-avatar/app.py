@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import cv2
 import numpy as np
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify, send_file, Response, stream_with_context
 from flask_socketio import SocketIO, emit
 from dotenv import load_dotenv
 from tqdm import tqdm
@@ -67,13 +67,13 @@ TTS_CACHE_TTL = 3600  # 캐시 유효 시간 (1시간)
 
 # 중앙 크롭 설정 (면접관 중앙 영역만 전송)
 # 원본 영상: 1268x724, 3명 면접관 중 중앙만 크롭
-CENTER_CROP_ENABLED = True  # 중앙 크롭 활성화 여부
-CENTER_CROP_RATIO = (0.32, 0.68)  # 좌측 32% ~ 우측 68% (중앙 36%)
+CENTER_CROP_ENABLED = False  # 중앙 크롭 활성화 여부 (임시 비활성화 - UI 레이아웃 테스트)
+CENTER_CROP_RATIO = (0.36, 0.64)  # 좌측 36% ~ 우측 64% (중앙 28%)
 # 해상도별 크롭 좌표 (x_start, x_end, width, height)
 CENTER_CROP_COORDS = {
-    "720p": (405, 862, 457, 724),   # 1268 * 0.32 ~ 1268 * 0.68
-    "480p": (271, 576, 305, 484),   # 848 * 0.32 ~ 848 * 0.68
-    "360p": (202, 429, 227, 360),   # 632 * 0.32 ~ 632 * 0.68
+    "720p": (456, 811, 355, 724),   # 1268 * 0.36 ~ 1268 * 0.64
+    "480p": (305, 543, 238, 484),   # 848 * 0.36 ~ 848 * 0.64
+    "360p": (228, 404, 176, 360),   # 632 * 0.36 ~ 632 * 0.64
 }
 
 # 클라이언트별 상태 관리 (멀티 브라우저 지원)
@@ -1845,7 +1845,7 @@ def load_precomputed_data(precomputed_path):
 def get_elevenlabs_voice_id(voice_name):
     """ElevenLabs 음성 이름을 ID로 변환"""
     voice_ids = {
-        'Custom': 'AFxUUThaQGYPjKmV6PhM',
+        'Custom': '2gbExjiWDnG1DMGr81Bx',
         'Rachel': '21m00Tcm4TlvDq8ikWAM',
         'Adam': 'pNInz6obpgDQGcFmaJgB',
         'Bella': 'EXAVITQu4vr4xnSDxMaL',
@@ -2717,9 +2717,9 @@ def select_avatar_by_audio_duration(audio_duration, avatar_path=None, frame_skip
     - 단일 아바타: 문자열 (경로)
     - 영상 조합: 리스트 [경로1, 경로2, ...]
     """
-    # 해상도별 프리컴퓨트 경로
-    SHORT_AVATAR = _get_resolution_avatar("질문_short", resolution)
-    LONG_AVATAR = _get_resolution_avatar("질문_long", resolution)
+    # 해상도별 프리컴퓨트 경로 (talk_short, talk_long 사용)
+    SHORT_AVATAR = _get_resolution_avatar("talk_short", resolution)
+    LONG_AVATAR = _get_resolution_avatar("talk_long", resolution)
     SHORT_DURATION = 5.0  # short 영상 길이
     LONG_DURATION = 10.0  # long 영상 길이
     AUDIO_DURATION_THRESHOLD = 5.0  # 5초 기준
@@ -2732,10 +2732,10 @@ def select_avatar_by_audio_duration(audio_duration, avatar_path=None, frame_skip
     if audio_duration <= LONG_DURATION:
         if audio_duration <= AUDIO_DURATION_THRESHOLD:
             selected = SHORT_AVATAR
-            print(f"[아바타 자동 선택] 짧은 오디오 ({audio_duration:.2f}초 ≤ 5초) → 질문_short (5초)")
+            print(f"[아바타 자동 선택] 짧은 오디오 ({audio_duration:.2f}초 ≤ 5초) → talk_short (5초)")
         else:
             selected = LONG_AVATAR
-            print(f"[아바타 자동 선택] 중간 오디오 ({audio_duration:.2f}초) → 질문_long (10초)")
+            print(f"[아바타 자동 선택] 중간 오디오 ({audio_duration:.2f}초) → talk_long (10초)")
 
         if not os.path.exists(selected):
             return _get_fallback_avatar(avatar_path, LONG_AVATAR, SHORT_AVATAR)
@@ -2746,7 +2746,7 @@ def select_avatar_by_audio_duration(audio_duration, avatar_path=None, frame_skip
 
     if is_fast_mode:
         # Fast 모드: long 영상 1개만 사용, 페이드 전환으로 처리
-        print(f"[아바타 자동 선택] Fast 모드 - 긴 오디오 ({audio_duration:.2f}초 > 10초) → 질문_long (10초) + 페이드 전환")
+        print(f"[아바타 자동 선택] Fast 모드 - 긴 오디오 ({audio_duration:.2f}초 > 10초) → talk_long (10초) + 페이드 전환")
         selected = LONG_AVATAR
         if not os.path.exists(selected):
             return _get_fallback_avatar(avatar_path, LONG_AVATAR, SHORT_AVATAR)
@@ -2997,10 +2997,19 @@ def process_generation_request(request_data):
         }
         # 크롭 좌표가 있으면 추가 (클라이언트에서 오버레이 위치 계산용)
         if crop_coords:
+            # 해상도별 원본 영상 크기 (크롭 전)
+            resolution_sizes = {
+                "720p": (1268, 724),
+                "480p": (848, 484),
+                "360p": (632, 360)
+            }
+            native_width, native_height = resolution_sizes.get(resolution, (1268, 724))
             complete_data['crop_coords'] = {
                 'x': crop_coords[0],
                 'width': crop_coords[2],
                 'height': crop_coords[3],
+                'native_width': native_width,    # 원본 영상 너비 (크롭 전)
+                'native_height': native_height,  # 원본 영상 높이 (크롭 전)
                 'center_crop': True
             }
         socketio.emit('complete', complete_data, to=sid)
@@ -3066,11 +3075,20 @@ def set_prompt():
 
 @app.route('/api/chat', methods=['POST'])
 def api_chat():
-    """LLM 채팅 API"""
+    """LLM 채팅 API (Stateless - 클라이언트가 대화 기록 관리)"""
     global conversation_history
 
     data = request.json
     message = data.get('message', '')
+
+    # 클라이언트가 전송한 대화 기록 (옵션 2: Stateless 방식)
+    # history 형식: [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}, ...]
+    client_history = data.get('history', None)
+
+    # 면접 컨텍스트 파라미터 (v2.0 API)
+    org_type = data.get('org_type', '일반기업')  # 분야: 일반기업, 병원
+    job_name = data.get('job_name', '')  # 직무명
+    company_name = data.get('company_name', '')  # 기업/병원명
 
     if not message:
         return jsonify({"error": "메시지가 필요합니다"}), 400
@@ -3083,28 +3101,55 @@ def api_chat():
 
         import requests
 
-        # 대화 기록에 사용자 메시지 추가
-        conversation_history.append({"role": "user", "content": message})
+        # 대화 기록 결정: 클라이언트 전송 기록 우선, 없으면 서버 기록 사용 (하위 호환성)
+        # 최대 50턴 지원 (qwen3-30b: 32K 토큰, gpt-4o-mini: 128K 토큰)
+        MAX_HISTORY_TURNS = 50
+        if client_history is not None:
+            # Stateless 모드: 클라이언트가 전송한 기록 사용
+            history_to_use = client_history[-MAX_HISTORY_TURNS:]
+        else:
+            # Legacy 모드: 서버 전역 기록 사용 (하위 호환성)
+            conversation_history.append({"role": "user", "content": message})
+            history_to_use = conversation_history[-MAX_HISTORY_TURNS:]
 
-        messages_payload = [
-            {"role": "system", "content": current_system_prompt},
-            *conversation_history[-10:]  # 최근 10개 대화만 유지
-        ]
+        # 클라이언트 history 모드에서는 현재 메시지 추가
+        if client_history is not None:
+            messages_payload = [
+                {"role": "system", "content": current_system_prompt},
+                *history_to_use,
+                {"role": "user", "content": message}
+            ]
+        else:
+            messages_payload = [
+                {"role": "system", "content": current_system_prompt},
+                *history_to_use
+            ]
 
         assistant_message = None
         llm_source = None  # LLM 소스 추적
+
+        # API 요청 페이로드 구성
+        api_payload = {
+            "model": llm_model,
+            "messages": messages_payload,
+            "max_tokens": 200,
+            "temperature": 0.7,
+            "company_name": company_name if company_name else "일반 기업"  # 필수 파라미터
+        }
+
+        # 질문셋 RAG 활성화 (직무가 선택된 경우)
+        if job_name:
+            api_payload["question_set_rag_enabled"] = True
+            api_payload["question_set_org_type"] = org_type
+            api_payload["question_set_job_name"] = job_name
+            api_payload["question_set_top_k"] = 5  # 검색 질문 수
 
         # 1차 시도: LLM API Server (api.mindprep.co.kr - 인증 불필요)
         try:
             response = requests.post(
                 llm_api_url,
                 headers={"Content-Type": "application/json"},
-                json={
-                    "model": llm_model,
-                    "messages": messages_payload,
-                    "max_tokens": 200,
-                    "temperature": 0.7
-                },
+                json=api_payload,
                 timeout=30
             )
 
@@ -3152,8 +3197,28 @@ def api_chat():
             assistant_message = re.sub(r'<\|im_end\|>|<\|im_start\|>|<\|endoftext\|>', '', assistant_message)
             assistant_message = re.sub(r'<think>.*?</think>', '', assistant_message, flags=re.DOTALL).strip()
 
-            conversation_history.append({"role": "assistant", "content": assistant_message})
-            return jsonify({"response": assistant_message, "llm_source": llm_source})
+            # Legacy 모드에서만 서버 기록에 추가
+            if client_history is None:
+                conversation_history.append({"role": "assistant", "content": assistant_message})
+
+            # LLM에 전송된 파라미터 정보 (디버깅/투명성 용도)
+            llm_params = {
+                "model": llm_model,
+                "max_tokens": 200,
+                "temperature": 0.7,
+                "system_prompt": current_system_prompt,
+                "history_count": len(history_to_use),
+                "org_type": org_type,
+                "job_name": job_name if job_name else None,
+                "company_name": company_name if company_name else None,
+                "question_set_rag_enabled": bool(job_name),
+            }
+
+            return jsonify({
+                "response": assistant_message,
+                "llm_source": llm_source,
+                "llm_params": llm_params
+            })
         else:
             return jsonify({"error": "LLM API 및 OpenAI fallback 모두 실패"}), 500
 
@@ -3161,6 +3226,215 @@ def api_chat():
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/chat/stream', methods=['POST'])
+def api_chat_stream():
+    """
+    LLM 채팅 API (스트리밍 - Server-Sent Events)
+
+    토큰 단위로 응답을 스트리밍합니다.
+
+    Request:
+        {
+            "message": "질문",
+            "history": [...],  // optional
+            "org_type": "일반기업",
+            "company_name": "삼성전자",
+            "job_name": "개발엔지니어링"
+        }
+
+    Response (SSE):
+        data: {"type": "token", "content": "안녕"}
+        data: {"type": "token", "content": "하세요"}
+        data: {"type": "done", "response": "안녕하세요...", "llm_source": "...", "llm_params": {...}}
+        data: {"type": "error", "message": "오류 메시지"}
+    """
+    global conversation_history
+
+    data = request.json
+    message = data.get('message', '')
+    client_history = data.get('history', None)
+    org_type = data.get('org_type', '일반기업')
+    job_name = data.get('job_name', '')
+    company_name = data.get('company_name', '')
+
+    if not message:
+        return jsonify({"error": "메시지가 필요합니다"}), 400
+
+    def generate():
+        nonlocal message, client_history, org_type, job_name, company_name
+
+        try:
+            import requests as req_lib
+            import re
+
+            llm_api_url = os.getenv('LLM_API_URL', 'https://api.mindprep.co.kr/v1/chat/completions')
+            llm_model = os.getenv('LLM_MODEL', 'vllm-qwen3-30b-a3b')
+            openai_api_key = os.getenv('OPENAI_API_KEY', '')
+
+            # 대화 기록 처리
+            MAX_HISTORY_TURNS = 50
+            if client_history is not None:
+                history_to_use = client_history[-MAX_HISTORY_TURNS:]
+            else:
+                conversation_history.append({"role": "user", "content": message})
+                history_to_use = conversation_history[-MAX_HISTORY_TURNS:]
+
+            # 메시지 페이로드 구성
+            if client_history is not None:
+                messages_payload = [
+                    {"role": "system", "content": current_system_prompt},
+                    *history_to_use,
+                    {"role": "user", "content": message}
+                ]
+            else:
+                messages_payload = [
+                    {"role": "system", "content": current_system_prompt},
+                    *history_to_use
+                ]
+
+            # API 요청 페이로드
+            api_payload = {
+                "model": llm_model,
+                "messages": messages_payload,
+                "max_tokens": 200,
+                "temperature": 0.7,
+                "stream": True,  # 스트리밍 활성화
+                "company_name": company_name if company_name else "일반 기업"
+            }
+
+            if job_name:
+                api_payload["question_set_rag_enabled"] = True
+                api_payload["question_set_org_type"] = org_type
+                api_payload["question_set_job_name"] = job_name
+                api_payload["question_set_top_k"] = 5
+
+            full_response = ""
+            llm_source = None
+
+            # 1차 시도: LLM API Server (스트리밍)
+            try:
+                response = req_lib.post(
+                    llm_api_url,
+                    headers={"Content-Type": "application/json"},
+                    json=api_payload,
+                    timeout=60,
+                    stream=True
+                )
+
+                if response.status_code == 200:
+                    llm_source = f"LLM API ({llm_model})"
+
+                    for line in response.iter_lines():
+                        if line:
+                            line_str = line.decode('utf-8')
+                            if line_str.startswith('data: '):
+                                data_str = line_str[6:]
+                                if data_str == '[DONE]':
+                                    break
+                                try:
+                                    chunk = json.loads(data_str)
+                                    if 'choices' in chunk and len(chunk['choices']) > 0:
+                                        delta = chunk['choices'][0].get('delta', {})
+                                        content = delta.get('content', '')
+                                        if content:
+                                            full_response += content
+                                            yield f"data: {json.dumps({'type': 'token', 'content': content}, ensure_ascii=False)}\n\n"
+                                except json.JSONDecodeError:
+                                    pass
+                else:
+                    print(f"LLM API Server 스트리밍 실패: {response.status_code}")
+                    llm_source = None
+
+            except Exception as e:
+                print(f"LLM API Server 스트리밍 연결 실패: {e}")
+                llm_source = None
+
+            # 2차 시도: OpenAI API (fallback, 스트리밍)
+            if not full_response and openai_api_key:
+                try:
+                    response = req_lib.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {openai_api_key}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "model": "gpt-4o-mini",
+                            "messages": messages_payload,
+                            "max_tokens": 200,
+                            "temperature": 0.7,
+                            "stream": True
+                        },
+                        timeout=60,
+                        stream=True
+                    )
+
+                    if response.status_code == 200:
+                        llm_source = "OpenAI (gpt-4o-mini)"
+
+                        for line in response.iter_lines():
+                            if line:
+                                line_str = line.decode('utf-8')
+                                if line_str.startswith('data: '):
+                                    data_str = line_str[6:]
+                                    if data_str == '[DONE]':
+                                        break
+                                    try:
+                                        chunk = json.loads(data_str)
+                                        if 'choices' in chunk and len(chunk['choices']) > 0:
+                                            delta = chunk['choices'][0].get('delta', {})
+                                            content = delta.get('content', '')
+                                            if content:
+                                                full_response += content
+                                                yield f"data: {json.dumps({'type': 'token', 'content': content}, ensure_ascii=False)}\n\n"
+                                    except json.JSONDecodeError:
+                                        pass
+                except Exception as e:
+                    print(f"OpenAI 스트리밍 fallback 실패: {e}")
+
+            if full_response:
+                # 특수 토큰 및 think 태그 제거
+                cleaned_response = re.sub(r'<\|im_end\|>|<\|im_start\|>|<\|endoftext\|>', '', full_response)
+                cleaned_response = re.sub(r'<think>.*?</think>', '', cleaned_response, flags=re.DOTALL).strip()
+
+                # Legacy 모드에서만 서버 기록에 추가
+                if client_history is None:
+                    conversation_history.append({"role": "assistant", "content": cleaned_response})
+
+                # LLM 파라미터 정보
+                llm_params = {
+                    "model": llm_model,
+                    "max_tokens": 200,
+                    "temperature": 0.7,
+                    "system_prompt": current_system_prompt,
+                    "history_count": len(history_to_use),
+                    "org_type": org_type,
+                    "job_name": job_name if job_name else None,
+                    "company_name": company_name if company_name else None,
+                    "question_set_rag_enabled": bool(job_name),
+                }
+
+                # 완료 이벤트
+                yield f"data: {json.dumps({'type': 'done', 'response': cleaned_response, 'llm_source': llm_source, 'llm_params': llm_params}, ensure_ascii=False)}\n\n"
+            else:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'LLM API 및 OpenAI fallback 모두 실패'}, ensure_ascii=False)}\n\n"
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no'
+        }
+    )
 
 
 @app.route('/api/clear_history', methods=['POST'])
@@ -3358,6 +3632,131 @@ def api_v2_lipsync():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route('/api/v2/lipsync/stream', methods=['POST'])
+def api_v2_lipsync_stream():
+    """
+    립싱크 비디오 생성 API (스트리밍 - Server-Sent Events)
+
+    클라이언트가 LLM으로 생성한 텍스트를 보내면 TTS + 립싱크 비디오를 생성합니다.
+    진행 상태를 실시간으로 스트리밍합니다.
+
+    Request:
+        {
+            "text": "립싱크로 만들 텍스트 (LLM 응답)",
+            "avatar": "avatar_name",
+            "avatar_path": "path.pkl",  // optional
+            "tts_engine": "elevenlabs",
+            "tts_voice": "Custom",
+            "resolution": "720p",
+            "frame_skip": 1
+        }
+
+    Response (SSE):
+        data: {"type": "status", "stage": "tts", "message": "TTS 생성 중..."}
+        data: {"type": "status", "stage": "tts_done", "message": "TTS 완료", "audio_url": "...", "duration": 3.5}
+        data: {"type": "status", "stage": "lipsync", "message": "립싱크 생성 중..."}
+        data: {"type": "done", "video_url": "/video/...", "audio_url": "...", "elapsed": {...}}
+        data: {"type": "error", "message": "오류 메시지"}
+    """
+    global lipsync_engine
+
+    data = request.json or {}
+    text = data.get('text', '')
+    avatar = data.get('avatar', '')
+    avatar_path = data.get('avatar_path', '')
+    tts_engine = data.get('tts_engine', DEFAULT_TTS_ENGINE)
+    tts_voice = data.get('tts_voice', DEFAULT_TTS_VOICE)
+    frame_skip = data.get('frame_skip', 1)
+    resolution = data.get('resolution', '720p')
+
+    # 아바타 경로 결정
+    if not avatar_path and avatar:
+        avatar_path = f"precomputed/{avatar}_precomputed.pkl"
+
+    if not text:
+        return jsonify({"error": "text가 필요합니다"}), 400
+
+    if not avatar_path:
+        return jsonify({"error": "avatar 또는 avatar_path가 필요합니다"}), 400
+
+    if not os.path.exists(avatar_path):
+        return jsonify({"error": f"아바타 파일을 찾을 수 없습니다: {avatar_path}"}), 404
+
+    if not lipsync_engine or not lipsync_engine.loaded:
+        return jsonify({"error": "립싱크 엔진이 로드되지 않았습니다"}), 503
+
+    def generate():
+        nonlocal text, avatar_path, tts_engine, tts_voice, frame_skip, resolution
+
+        try:
+            start_time = time.time()
+
+            # ===== 1단계: TTS 생성 =====
+            yield f"data: {json.dumps({'type': 'status', 'stage': 'tts', 'message': 'TTS 음성 생성 중...'}, ensure_ascii=False)}\n\n"
+
+            tts_start = time.time()
+            tts_output = Path("assets/audio/tts_output.wav")
+            tts_result = generate_tts_audio(text, tts_engine, tts_voice, tts_output)
+
+            if not tts_result:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'TTS 생성 실패'}, ensure_ascii=False)}\n\n"
+                return
+
+            tts_time = time.time() - tts_start
+            audio_numpy, sample_rate = tts_result
+            audio_duration = len(audio_numpy) / sample_rate
+
+            yield f"data: {json.dumps({'type': 'status', 'stage': 'tts_done', 'message': f'TTS 완료 ({audio_duration:.1f}초)', 'audio_url': '/assets/audio/tts_output.wav', 'duration': round(audio_duration, 2), 'elapsed': round(tts_time, 2)}, ensure_ascii=False)}\n\n"
+
+            # ===== 2단계: 립싱크 생성 =====
+            yield f"data: {json.dumps({'type': 'status', 'stage': 'lipsync', 'message': '립싱크 비디오 생성 중...'}, ensure_ascii=False)}\n\n"
+
+            lipsync_start = time.time()
+
+            # 아바타 자동 선택
+            avatar_selection = select_avatar_by_audio_duration(audio_duration, avatar_path, frame_skip, resolution)
+            if isinstance(avatar_selection, list):
+                selected_avatar = avatar_selection[0]
+            else:
+                selected_avatar = avatar_selection
+
+            if selected_avatar != avatar_path:
+                print(f"[아바타 변경] {avatar_path} → {selected_avatar}")
+                avatar_path = selected_avatar
+
+            # 립싱크 생성
+            output_video = lipsync_engine.generate_lipsync(
+                avatar_path,
+                (audio_numpy, sample_rate),
+                output_dir="results/realtime",
+                frame_skip=frame_skip
+            )
+
+            lipsync_time = time.time() - lipsync_start
+            total_time = time.time() - start_time
+
+            if output_video:
+                video_filename = os.path.basename(output_video)
+                yield f"data: {json.dumps({'type': 'done', 'text': text, 'video_path': output_video, 'video_url': f'/video/{video_filename}', 'audio_url': '/assets/audio/tts_output.wav', 'audio_duration': round(audio_duration, 2), 'elapsed': {'tts': round(tts_time, 2), 'lipsync': round(lipsync_time, 2), 'total': round(total_time, 2)}}, ensure_ascii=False)}\n\n"
+            else:
+                yield f"data: {json.dumps({'type': 'error', 'message': '립싱크 생성 실패'}, ensure_ascii=False)}\n\n"
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no'
+        }
+    )
+
+
 @app.route('/api/v2/chat_and_lipsync', methods=['POST'])
 def api_v2_chat_and_lipsync():
     """
@@ -3541,6 +3940,280 @@ def api_v2_chat_and_lipsync():
         import traceback
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/v2/chat_and_lipsync/stream', methods=['POST'])
+def api_v2_chat_and_lipsync_stream():
+    """
+    채팅 + 립싱크 통합 API (스트리밍 - Server-Sent Events)
+
+    LLM 응답을 토큰 단위로 스트리밍하고, TTS/립싱크 진행 상태를 실시간 전송합니다.
+
+    Request:
+        {
+            "message": "사용자 메시지",
+            "history": [...],  // optional
+            "avatar": "avatar_name",
+            "avatar_path": "path.pkl",  // optional
+            "tts_engine": "elevenlabs",
+            "tts_voice": "Custom",
+            "resolution": "720p",
+            "frame_skip": 1
+        }
+
+    Response (SSE):
+        data: {"type": "token", "content": "안녕"}
+        data: {"type": "llm_done", "response": "안녕하세요..."}
+        data: {"type": "status", "stage": "tts", "message": "TTS 생성 중..."}
+        data: {"type": "status", "stage": "lipsync", "message": "립싱크 생성 중...", "progress": 50}
+        data: {"type": "done", "response": "...", "video_url": "/video/...", "audio_url": "/assets/audio/..."}
+        data: {"type": "error", "message": "오류 메시지"}
+    """
+    global lipsync_engine, conversation_history
+
+    data = request.json or {}
+    message = data.get('message', '')
+    client_history = data.get('history', None)
+    org_type = data.get('org_type', '일반기업')
+    job_name = data.get('job_name', '')
+    company_name = data.get('company_name', '')
+    avatar = data.get('avatar', '')
+    avatar_path = data.get('avatar_path', '')
+    tts_engine = data.get('tts_engine', DEFAULT_TTS_ENGINE)
+    tts_voice = data.get('tts_voice', DEFAULT_TTS_VOICE)
+    frame_skip = data.get('frame_skip', 1)
+    resolution = data.get('resolution', '720p')
+
+    # 아바타 경로 결정
+    if not avatar_path and avatar:
+        avatar_path = f"precomputed/{avatar}_precomputed.pkl"
+
+    if not message:
+        return jsonify({"error": "메시지가 필요합니다"}), 400
+
+    if not avatar_path:
+        return jsonify({"error": "avatar 또는 avatar_path가 필요합니다"}), 400
+
+    if not os.path.exists(avatar_path):
+        return jsonify({"error": f"아바타 파일을 찾을 수 없습니다: {avatar_path}"}), 404
+
+    if not lipsync_engine or not lipsync_engine.loaded:
+        return jsonify({"error": "립싱크 엔진이 로드되지 않았습니다"}), 503
+
+    def generate():
+        nonlocal message, client_history, org_type, job_name, company_name
+        nonlocal avatar_path, tts_engine, tts_voice, frame_skip, resolution
+
+        try:
+            import requests as req_lib
+            import re
+
+            start_time = time.time()
+
+            llm_api_url = os.getenv('LLM_API_URL', 'https://api.mindprep.co.kr/v1/chat/completions')
+            llm_model = os.getenv('LLM_MODEL', 'vllm-qwen3-30b-a3b')
+            openai_api_key = os.getenv('OPENAI_API_KEY', '')
+
+            # 대화 기록 처리
+            MAX_HISTORY_TURNS = 50
+            if client_history is not None:
+                history_to_use = client_history[-MAX_HISTORY_TURNS:]
+            else:
+                conversation_history.append({"role": "user", "content": message})
+                history_to_use = conversation_history[-MAX_HISTORY_TURNS:]
+
+            # 메시지 페이로드 구성
+            if client_history is not None:
+                messages_payload = [
+                    {"role": "system", "content": current_system_prompt},
+                    *history_to_use,
+                    {"role": "user", "content": message}
+                ]
+            else:
+                messages_payload = [
+                    {"role": "system", "content": current_system_prompt},
+                    *history_to_use
+                ]
+
+            # API 요청 페이로드
+            api_payload = {
+                "model": llm_model,
+                "messages": messages_payload,
+                "max_tokens": 200,
+                "temperature": 0.7,
+                "stream": True,
+                "company_name": company_name if company_name else "일반 기업"
+            }
+
+            if job_name:
+                api_payload["question_set_rag_enabled"] = True
+                api_payload["question_set_org_type"] = org_type
+                api_payload["question_set_job_name"] = job_name
+                api_payload["question_set_top_k"] = 5
+
+            full_response = ""
+            llm_source = None
+
+            # ===== 1단계: LLM 스트리밍 =====
+            yield f"data: {json.dumps({'type': 'status', 'stage': 'llm', 'message': 'LLM 응답 생성 중...'}, ensure_ascii=False)}\n\n"
+
+            # 1차 시도: LLM API Server (스트리밍)
+            try:
+                response = req_lib.post(
+                    llm_api_url,
+                    headers={"Content-Type": "application/json"},
+                    json=api_payload,
+                    timeout=60,
+                    stream=True
+                )
+
+                if response.status_code == 200:
+                    llm_source = f"LLM API ({llm_model})"
+
+                    for line in response.iter_lines():
+                        if line:
+                            line_str = line.decode('utf-8')
+                            if line_str.startswith('data: '):
+                                data_str = line_str[6:]
+                                if data_str == '[DONE]':
+                                    break
+                                try:
+                                    chunk = json.loads(data_str)
+                                    if 'choices' in chunk and len(chunk['choices']) > 0:
+                                        delta = chunk['choices'][0].get('delta', {})
+                                        content = delta.get('content', '')
+                                        if content:
+                                            full_response += content
+                                            yield f"data: {json.dumps({'type': 'token', 'content': content}, ensure_ascii=False)}\n\n"
+                                except json.JSONDecodeError:
+                                    pass
+                else:
+                    print(f"LLM API Server 스트리밍 실패: {response.status_code}")
+                    llm_source = None
+
+            except Exception as e:
+                print(f"LLM API Server 스트리밍 연결 실패: {e}")
+                llm_source = None
+
+            # 2차 시도: OpenAI API (fallback, 스트리밍)
+            if not full_response and openai_api_key:
+                try:
+                    response = req_lib.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {openai_api_key}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "model": "gpt-4o-mini",
+                            "messages": messages_payload,
+                            "max_tokens": 200,
+                            "temperature": 0.7,
+                            "stream": True
+                        },
+                        timeout=60,
+                        stream=True
+                    )
+
+                    if response.status_code == 200:
+                        llm_source = "OpenAI (gpt-4o-mini)"
+
+                        for line in response.iter_lines():
+                            if line:
+                                line_str = line.decode('utf-8')
+                                if line_str.startswith('data: '):
+                                    data_str = line_str[6:]
+                                    if data_str == '[DONE]':
+                                        break
+                                    try:
+                                        chunk = json.loads(data_str)
+                                        if 'choices' in chunk and len(chunk['choices']) > 0:
+                                            delta = chunk['choices'][0].get('delta', {})
+                                            content = delta.get('content', '')
+                                            if content:
+                                                full_response += content
+                                                yield f"data: {json.dumps({'type': 'token', 'content': content}, ensure_ascii=False)}\n\n"
+                                    except json.JSONDecodeError:
+                                        pass
+                except Exception as e:
+                    print(f"OpenAI 스트리밍 fallback 실패: {e}")
+
+            if not full_response:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'LLM API 및 OpenAI fallback 모두 실패'}, ensure_ascii=False)}\n\n"
+                return
+
+            # 특수 토큰 및 think 태그 제거
+            cleaned_response = re.sub(r'<\|im_end\|>|<\|im_start\|>|<\|endoftext\|>', '', full_response)
+            cleaned_response = re.sub(r'<think>.*?</think>', '', cleaned_response, flags=re.DOTALL).strip()
+
+            # Legacy 모드에서만 서버 기록에 추가
+            if client_history is None:
+                conversation_history.append({"role": "assistant", "content": cleaned_response})
+
+            # LLM 완료 이벤트
+            llm_time = time.time() - start_time
+            yield f"data: {json.dumps({'type': 'llm_done', 'response': cleaned_response, 'llm_source': llm_source, 'elapsed': round(llm_time, 2)}, ensure_ascii=False)}\n\n"
+
+            # ===== 2단계: TTS 생성 =====
+            yield f"data: {json.dumps({'type': 'status', 'stage': 'tts', 'message': 'TTS 음성 생성 중...'}, ensure_ascii=False)}\n\n"
+
+            tts_start = time.time()
+            tts_output = Path("assets/audio/tts_output.wav")
+            tts_result = generate_tts_audio(cleaned_response, tts_engine, tts_voice, tts_output)
+
+            if not tts_result:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'TTS 생성 실패', 'response': cleaned_response}, ensure_ascii=False)}\n\n"
+                return
+
+            tts_time = time.time() - tts_start
+            audio_numpy, sample_rate = tts_result
+            audio_duration = len(audio_numpy) / sample_rate
+
+            yield f"data: {json.dumps({'type': 'status', 'stage': 'tts_done', 'message': f'TTS 완료 ({audio_duration:.1f}초)', 'audio_url': '/assets/audio/tts_output.wav', 'duration': round(audio_duration, 2), 'elapsed': round(tts_time, 2)}, ensure_ascii=False)}\n\n"
+
+            # ===== 3단계: 립싱크 생성 =====
+            yield f"data: {json.dumps({'type': 'status', 'stage': 'lipsync', 'message': '립싱크 비디오 생성 중...'}, ensure_ascii=False)}\n\n"
+
+            lipsync_start = time.time()
+
+            # 아바타 자동 선택
+            avatar_selection = select_avatar_by_audio_duration(audio_duration, avatar_path, frame_skip, resolution)
+            if isinstance(avatar_selection, list):
+                avatar_path = avatar_selection[0]
+            else:
+                avatar_path = avatar_selection
+
+            # 립싱크 생성
+            output_video = lipsync_engine.generate_lipsync(
+                avatar_path,
+                (audio_numpy, sample_rate),
+                output_dir="results/realtime",
+                frame_skip=frame_skip
+            )
+
+            lipsync_time = time.time() - lipsync_start
+            total_time = time.time() - start_time
+
+            if output_video:
+                video_filename = os.path.basename(output_video)
+                yield f"data: {json.dumps({'type': 'done', 'response': cleaned_response, 'llm_source': llm_source, 'video_path': output_video, 'video_url': f'/video/{video_filename}', 'audio_url': '/assets/audio/tts_output.wav', 'audio_duration': round(audio_duration, 2), 'elapsed': {'llm': round(llm_time, 2), 'tts': round(tts_time, 2), 'lipsync': round(lipsync_time, 2), 'total': round(total_time, 2)}}, ensure_ascii=False)}\n\n"
+            else:
+                yield f"data: {json.dumps({'type': 'error', 'message': '립싱크 생성 실패', 'response': cleaned_response}, ensure_ascii=False)}\n\n"
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no'
+        }
+    )
 
 
 @app.route('/api/v2/status', methods=['GET'])
