@@ -1666,20 +1666,6 @@ def api_audios():
     return jsonify(audios)
 
 
-@app.route('/api/tts_engines')
-def api_tts_engines():
-    """TTS 엔진 목록 API"""
-    engines = []
-    for engine_id, engine_info in TTS_ENGINES.items():
-        engines.append({
-            'id': engine_id,
-            'name': engine_info['name'],
-            'voices': engine_info['voices'],
-            'available': True
-        })
-    return jsonify(engines)
-
-
 @app.route('/api/queue_status')
 def api_queue_status():
     """큐 상태 확인 API (GPU 메모리 정보 포함)"""
@@ -2947,64 +2933,6 @@ def api_cancel():
 # ============================================================
 # REST API (동기적 - WebSocket 없이 사용 가능)
 # ============================================================
-
-@app.route('/api/v2/tts', methods=['POST'])
-def api_v2_tts():
-    """
-    TTS 오디오 생성 API (동기적)
-
-    Request:
-        {
-            "text": "합성할 텍스트",
-            "engine": "elevenlabs",  // optional, default: elevenlabs
-            "voice": "Custom"    // optional
-        }
-
-    Response:
-        {
-            "success": true,
-            "audio_path": "assets/audio/tts_output.wav",
-            "audio_url": "/assets/audio/tts_output.wav",
-            "duration": 3.5,
-            "elapsed": 2.1
-        }
-    """
-    data = request.json or {}
-    text = data.get('text', '')
-    engine = data.get('engine', DEFAULT_TTS_ENGINE)
-    voice = data.get('voice', DEFAULT_TTS_VOICE)
-
-    if not text:
-        return jsonify({"success": False, "error": "text가 필요합니다"}), 400
-
-    try:
-        start_time = time.time()
-        output_path = Path("assets/audio/tts_api_output.wav")
-
-        # 메모리에서 생성 후 파일로 저장 (테스트 API용)
-        tts_result = generate_tts_audio(text, engine, voice, output_path)
-
-        if tts_result:
-            audio_numpy, sample_rate = tts_result
-            # 오디오 길이 계산 (메모리에서)
-            duration = len(audio_numpy) / float(sample_rate)
-
-            elapsed = time.time() - start_time
-            return jsonify({
-                "success": True,
-                "audio_path": str(output_path),
-                "audio_url": "/assets/audio/tts_api_output.wav",
-                "duration": round(duration, 2),
-                "elapsed": round(elapsed, 2)
-            })
-        else:
-            return jsonify({"success": False, "error": "TTS 생성 실패"}), 500
-
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({"success": False, "error": str(e)}), 500
-
 
 @app.route('/api/v2/lipsync', methods=['POST'])
 def api_v2_lipsync():

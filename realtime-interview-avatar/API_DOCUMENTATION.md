@@ -30,8 +30,7 @@
 
 1. [서버 상태 확인](#1-서버-상태-확인)
 2. [립싱크 비디오 생성 API](#2-립싱크-비디오-생성-api) ⭐ 메인 API
-3. [TTS 생성 API](#3-tts-생성-api)
-4. [기타 API](#4-기타-api)
+3. [기타 API](#3-기타-api)
 
 ---
 
@@ -213,36 +212,7 @@ curl -X POST http://localhost:5000/api/v2/lipsync \
 
 ---
 
-## 3. TTS 생성 API
-
-### POST /api/v2/tts
-
-텍스트를 음성으로 변환합니다 (립싱크 없이 오디오만).
-
-**Request**
-```bash
-curl -X POST http://localhost:5000/api/v2/tts \
-  -H "Content-Type: application/json" \
-  -d '{
-    "text": "안녕하세요, 반갑습니다.",
-    "engine": "elevenlabs"
-  }'
-```
-
-**Response**
-```json
-{
-    "success": true,
-    "audio_path": "assets/audio/tts_api_output.wav",
-    "audio_url": "/assets/audio/tts_api_output.wav",
-    "duration": 2.5,
-    "elapsed": 1.8
-}
-```
-
----
-
-## 4. 기타 API
+## 3. 기타 API
 
 ### GET /api/avatars
 
@@ -255,18 +225,6 @@ curl -X POST http://localhost:5000/api/v2/tts \
         {"id": "talk_long_720p", "name": "talk_long_720p", "path": "precomputed/720p/talk_long_720p_precomputed.pkl"},
         {"id": "talk_short_720p", "name": "talk_short_720p", "path": "precomputed/720p/talk_short_720p_precomputed.pkl"}
     ]
-}
-```
-
-### GET /api/tts_engines
-
-사용 가능한 TTS 엔진 목록을 조회합니다.
-
-**Response**
-```json
-{
-    "engines": ["elevenlabs"],
-    "default": "elevenlabs"
 }
 ```
 
