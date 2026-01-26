@@ -1,0 +1,1986 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 아바타 영상 녹화</title>
+    <link rel="icon" href="data:,">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #fff;
+        }
+
+        .container {
+            max-width: 1800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            text-align: center;
+            padding: 15px 0;
+        }
+
+        header h1 {
+            font-size: 2.2em;
+            background: linear-gradient(90deg, #ff6b6b, #feca57);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 8px;
+        }
+
+        header p {
+            color: #888;
+            font-size: 1.1em;
+        }
+
+        .nav-links {
+            margin-top: 12px;
+        }
+
+        .nav-links a {
+            color: #00d2ff;
+            text-decoration: none;
+            margin: 0 15px;
+            font-size: 1em;
+        }
+
+        .nav-links a:hover {
+            text-decoration: underline;
+        }
+
+        /* 탭 네비게이션 */
+        .tab-nav {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin: 20px 0;
+        }
+
+        .tab-btn {
+            padding: 12px 30px;
+            border: none;
+            border-radius: 25px;
+            background: rgba(255, 255, 255, 0.1);
+            color: #aaa;
+            font-size: 1em;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .tab-btn:hover {
+            background: rgba(255, 255, 255, 0.15);
+        }
+
+        .tab-btn.active {
+            background: linear-gradient(90deg, #ff6b6b, #feca57);
+            color: #fff;
+            font-weight: bold;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 25px;
+            margin-top: 20px;
+        }
+
+        .panel {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .panel h2 {
+            font-size: 1.3em;
+            margin-bottom: 15px;
+            color: #feca57;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 6px;
+            color: #aaa;
+            font-size: 0.95em;
+        }
+
+        select, input, textarea, button {
+            width: 100%;
+            padding: 12px 16px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+            font-size: 1em;
+            transition: all 0.3s;
+        }
+
+        textarea {
+            min-height: 150px;
+            resize: vertical;
+            font-family: inherit;
+            line-height: 1.5;
+        }
+
+        textarea.batch-input {
+            min-height: 300px;
+            font-family: 'Consolas', monospace;
+            font-size: 0.9em;
+        }
+
+        select:hover, select:focus,
+        input:hover, input:focus,
+        textarea:hover, textarea:focus {
+            border-color: #feca57;
+            outline: none;
+        }
+
+        select option {
+            background: #1a1a2e;
+            color: #fff;
+        }
+
+        button.primary {
+            background: linear-gradient(90deg, #ff6b6b, #feca57);
+            border: none;
+            font-weight: bold;
+            cursor: pointer;
+            margin-top: 8px;
+        }
+
+        button.primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(254, 202, 87, 0.4);
+        }
+
+        button.primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        button.secondary {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            cursor: pointer;
+        }
+
+        button.secondary:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        button.danger {
+            background: linear-gradient(90deg, #e74c3c, #c0392b);
+            border: none;
+            cursor: pointer;
+        }
+
+        .video-container {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 16/9;
+            background: #000;
+            border-radius: 12px;
+            overflow: hidden;
+            margin-bottom: 15px;
+        }
+
+        .video-container video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .progress-container {
+            margin-top: 15px;
+            display: none;
+        }
+
+        .progress-bar {
+            height: 6px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #ff6b6b, #feca57);
+            width: 0%;
+            transition: width 0.3s;
+        }
+
+        .status-text {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 8px;
+            color: #aaa;
+            font-size: 0.9em;
+        }
+
+        .settings-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .settings-row-3 {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 12px;
+        }
+
+        /* 배치 작업 목록 */
+        .batch-list {
+            max-height: 400px;
+            overflow-y: auto;
+            margin-top: 15px;
+        }
+
+        .batch-item {
+            display: flex;
+            align-items: center;
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            margin-bottom: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            gap: 12px;
+        }
+
+        .batch-item.processing {
+            border-color: #feca57;
+            background: rgba(254, 202, 87, 0.1);
+        }
+
+        .batch-item.completed {
+            border-color: #4caf50;
+            background: rgba(76, 175, 80, 0.1);
+        }
+
+        .batch-item.error {
+            border-color: #e74c3c;
+            background: rgba(231, 76, 60, 0.1);
+        }
+
+        .batch-item .number {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.1);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 0.85em;
+            flex-shrink: 0;
+        }
+
+        .batch-item.completed .number {
+            background: #4caf50;
+        }
+
+        .batch-item.processing .number {
+            background: #feca57;
+            color: #000;
+        }
+
+        .batch-item .info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .batch-item .text {
+            font-size: 0.9em;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: #fff;
+        }
+
+        .batch-item .meta {
+            font-size: 0.8em;
+            color: #888;
+            margin-top: 3px;
+        }
+
+        .batch-item .actions {
+            display: flex;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+
+        .batch-item .actions button {
+            width: auto;
+            padding: 6px 12px;
+            font-size: 0.8em;
+        }
+
+        .btn-play {
+            background: linear-gradient(90deg, #00d2ff, #3a7bd5) !important;
+            border: none !important;
+        }
+
+        .btn-download {
+            background: linear-gradient(90deg, #11998e, #38ef7d) !important;
+            border: none !important;
+        }
+
+        /* 배치 진행 상황 */
+        .batch-progress {
+            background: rgba(254, 202, 87, 0.1);
+            border: 1px solid rgba(254, 202, 87, 0.3);
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 15px;
+            display: none;
+        }
+
+        .batch-progress.active {
+            display: block;
+        }
+
+        .batch-progress-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .batch-progress-title {
+            font-weight: bold;
+            color: #feca57;
+        }
+
+        .batch-progress-count {
+            color: #aaa;
+            font-size: 0.9em;
+        }
+
+        .batch-progress-bar {
+            height: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .batch-progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #ff6b6b, #feca57);
+            width: 0%;
+            transition: width 0.5s;
+        }
+
+        .batch-progress-status {
+            margin-top: 8px;
+            font-size: 0.9em;
+            color: #aaa;
+        }
+
+        /* 비디오 목록 */
+        .video-list {
+            max-height: 250px;
+            overflow-y: auto;
+            margin-top: 15px;
+        }
+
+        .video-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 12px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            margin-bottom: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .video-item:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .video-item .info {
+            flex: 1;
+        }
+
+        .video-item .name {
+            font-weight: bold;
+            color: #fff;
+            font-size: 0.95em;
+        }
+
+        .video-item .meta {
+            font-size: 0.8em;
+            color: #888;
+            margin-top: 2px;
+        }
+
+        .video-item .actions {
+            display: flex;
+            gap: 6px;
+        }
+
+        .video-item .actions button {
+            width: auto;
+            padding: 6px 12px;
+            font-size: 0.85em;
+        }
+
+        .char-count {
+            text-align: right;
+            font-size: 0.85em;
+            color: #888;
+            margin-top: 4px;
+        }
+
+        .char-count.warning {
+            color: #ff6b6b;
+        }
+
+        .tips {
+            background: rgba(0, 210, 255, 0.1);
+            border: 1px solid rgba(0, 210, 255, 0.3);
+            border-radius: 8px;
+            padding: 12px;
+            margin-top: 15px;
+        }
+
+        .tips h3 {
+            color: #00d2ff;
+            margin-bottom: 8px;
+            font-size: 1em;
+        }
+
+        .tips ul {
+            list-style: none;
+            padding: 0;
+        }
+
+        .tips li {
+            padding: 4px 0;
+            color: #aaa;
+            font-size: 0.9em;
+        }
+
+        .tips li::before {
+            content: "•";
+            color: #00d2ff;
+            margin-right: 8px;
+        }
+
+        .queue-status {
+            display: none;
+            align-items: center;
+            gap: 12px;
+            padding: 12px;
+            background: rgba(254, 202, 87, 0.1);
+            border-radius: 8px;
+            margin-top: 12px;
+            border: 1px solid rgba(254, 202, 87, 0.3);
+        }
+
+        .queue-spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(254, 202, 87, 0.3);
+            border-top-color: #feca57;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .queue-message {
+            font-weight: bold;
+            color: #feca57;
+            font-size: 0.95em;
+        }
+
+        /* 전체 다운로드 버튼 */
+        .download-all-btn {
+            background: linear-gradient(90deg, #11998e, #38ef7d) !important;
+            margin-top: 10px;
+        }
+
+        /* 파일 업로드 영역 */
+        .file-drop-zone {
+            border: 2px dashed rgba(255, 255, 255, 0.3);
+            border-radius: 12px;
+            padding: 40px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .file-drop-zone:hover {
+            border-color: #feca57;
+            background: rgba(254, 202, 87, 0.05);
+        }
+
+        .file-drop-zone.dragover {
+            border-color: #feca57;
+            background: rgba(254, 202, 87, 0.1);
+        }
+
+        .file-icon {
+            font-size: 3em;
+            margin-bottom: 10px;
+        }
+
+        .file-text {
+            color: #fff;
+            font-size: 1.1em;
+            margin-bottom: 5px;
+        }
+
+        .file-info {
+            color: #888;
+            font-size: 0.9em;
+        }
+
+        .selected-file {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 15px;
+            background: rgba(76, 175, 80, 0.1);
+            border: 1px solid rgba(76, 175, 80, 0.3);
+            border-radius: 8px;
+            margin-top: 10px;
+        }
+
+        .selected-file .file-name {
+            flex: 1;
+            color: #4caf50;
+            font-weight: bold;
+        }
+
+        .selected-file .file-size {
+            color: #888;
+            font-size: 0.9em;
+        }
+
+        .selected-file .file-remove {
+            width: 30px;
+            height: 30px;
+            padding: 0;
+            border-radius: 50%;
+            background: rgba(231, 76, 60, 0.2);
+            border: 1px solid rgba(231, 76, 60, 0.5);
+            color: #e74c3c;
+            cursor: pointer;
+            font-size: 1em;
+        }
+
+        .selected-file .file-remove:hover {
+            background: rgba(231, 76, 60, 0.4);
+        }
+
+        /* 업로드 결과 카드 */
+        .result-card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .result-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            padding: 10px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .result-item:last-child {
+            border-bottom: none;
+        }
+
+        .result-label {
+            color: #888;
+            font-size: 0.9em;
+            flex-shrink: 0;
+            width: 80px;
+        }
+
+        .result-value {
+            color: #fff;
+            font-size: 0.95em;
+            text-align: right;
+            flex: 1;
+        }
+
+        .result-link {
+            color: #00d2ff;
+            text-decoration: none;
+        }
+
+        .result-link:hover {
+            text-decoration: underline;
+        }
+
+        @media (max-width: 1200px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>AI 아바타 영상 녹화</h1>
+            <p>텍스트를 입력하면 AI 아바타가 말하는 영상을 생성합니다</p>
+            <div class="nav-links">
+                <a href="/">← 면접 시뮬레이션</a>
+                <a href="/record">영상 녹화</a>
+            </div>
+        </header>
+
+        <!-- 탭 네비게이션 -->
+        <div class="tab-nav">
+            <button class="tab-btn active" onclick="switchTab('single')">단일 녹화</button>
+            <button class="tab-btn" onclick="switchTab('batch')">대량 녹화</button>
+            <button class="tab-btn" onclick="switchTab('upload')">캐시 업로드</button>
+        </div>
+
+        <!-- 단일 녹화 탭 -->
+        <div id="singleTab" class="tab-content active">
+            <div class="main-content">
+                <!-- 왼쪽: 입력 패널 -->
+                <div class="panel">
+                    <h2>텍스트 입력</h2>
+
+                    <div class="settings-row">
+                        <div class="form-group">
+                            <label>TTS 엔진</label>
+                            <select id="ttsEngineSelect" onchange="updateVoiceOptions()">
+                                <option value="">로딩 중...</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>음성</label>
+                            <select id="ttsVoiceSelect">
+                                <option value="">엔진 선택</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="settings-row">
+                        <div class="form-group">
+                            <label>출력 해상도</label>
+                            <select id="resolutionSelect">
+                                <option value="720p" selected>720p (고품질)</option>
+                                <option value="480p">480p (권장)</option>
+                                <option value="360p">360p (빠른 속도)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>출력 포맷</label>
+                            <select id="formatSelect">
+                                <option value="mp4" selected>MP4 (호환성)</option>
+                                <option value="webm">WebM (웹 최적화)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="settings-row">
+                        <div class="form-group">
+                            <label>속도/품질</label>
+                            <select id="frameSkipSelect">
+                                <option value="1" selected>고품질 (기본)</option>
+                                <option value="2">빠름 (2배속)</option>
+                                <option value="3">최고속 (3배속)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>파일명 (선택)</label>
+                            <input type="text" id="filenameInput" placeholder="자동 생성">
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>대사 입력</label>
+                        <select id="exampleTextSelect" onchange="selectExampleText()" style="width: 100%; padding: 10px; margin-bottom: 8px; border-radius: 8px; border: 1px solid #333; background: #1e1e1e; color: #fff; font-size: 0.9rem;">
+                            <option value="">테스트 예시 선택...</option>
+                            <option value="안녕하세요">짧은 인사 (1문장)</option>
+                            <option value="안녕하세요. 만나서 반갑습니다.">기본 인사 (2문장)</option>
+                            <option value="안녕하세요. 저는 AI 면접관입니다. 오늘 면접에 참석해 주셔서 감사합니다.">긴 인사 (3문장)</option>
+                            <option value="자기소개를 해 주시겠어요?">면접 질문 - 자기소개</option>
+                            <option value="지원 동기에 대해 말씀해 주세요.">면접 질문 - 지원 동기</option>
+                            <option value="본인의 강점과 약점에 대해 말씀해 주세요.">면접 질문 - 강점/약점</option>
+                            <option value="5년 후 자신의 모습을 어떻게 그리고 계신가요?">면접 질문 - 미래 비전</option>
+                            <option value="마지막으로 하고 싶은 말씀이 있으신가요?">면접 질문 - 마무리</option>
+                            <option value="네, 좋은 답변 감사합니다. 다음 질문으로 넘어가겠습니다.">면접관 피드백</option>
+                            <option value="오늘 면접은 여기까지입니다. 결과는 추후 개별 연락 드리겠습니다. 수고하셨습니다.">면접 종료 멘트</option>
+                        </select>
+                        <textarea id="scriptInput" placeholder="아바타가 말할 내용을 입력하세요..."></textarea>
+                        <div class="char-count" id="charCount">0 / 1000자</div>
+                    </div>
+
+                    <button class="primary" id="generateBtn" onclick="generateVideo()">
+                        🎬 영상 생성
+                    </button>
+
+                    <div class="progress-container" id="progressContainer">
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="progressFill"></div>
+                        </div>
+                        <div class="status-text">
+                            <span id="statusText">준비 중...</span>
+                            <span id="elapsedTime"></span>
+                        </div>
+                    </div>
+
+                    <div class="queue-status" id="queueStatus">
+                        <div class="queue-spinner"></div>
+                        <div class="queue-message" id="queueMessage">대기 중...</div>
+                    </div>
+                </div>
+
+                <!-- 오른쪽: 미리보기 -->
+                <div class="panel">
+                    <h2>미리보기</h2>
+                    <div class="video-container">
+                        <video id="previewVideo" controls></video>
+                    </div>
+                    <div style="display: flex; gap: 10px;">
+                        <button class="btn-download secondary" id="downloadBtn" onclick="downloadVideo()" disabled>
+                            📥 다운로드
+                        </button>
+                        <button class="secondary" onclick="copyVideoUrl()" id="copyUrlBtn" disabled>
+                            🔗 URL 복사
+                        </button>
+                        <button class="secondary" id="loopBtn" onclick="toggleLoop()" disabled>
+                            🔁 반복 재생
+                        </button>
+                    </div>
+
+                    <h2 style="margin-top: 20px;">생성된 영상</h2>
+                    <div class="video-list" id="videoList">
+                        <p style="color: #888; text-align: center; padding: 15px;">
+                            아직 생성된 영상이 없습니다
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 대량 녹화 탭 -->
+        <div id="batchTab" class="tab-content">
+            <div class="main-content">
+                <!-- 왼쪽: 배치 입력 -->
+                <div class="panel">
+                    <h2>대량 텍스트 입력</h2>
+
+                    <div class="settings-row-3">
+                        <div class="form-group">
+                            <label>TTS 엔진</label>
+                            <select id="batchTtsEngineSelect" onchange="updateBatchVoiceOptions()">
+                                <option value="">로딩 중...</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>음성</label>
+                            <select id="batchTtsVoiceSelect">
+                                <option value="">엔진 선택</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>해상도</label>
+                            <select id="batchResolutionSelect">
+                                <option value="720p" selected>720p (고품질)</option>
+                                <option value="480p">480p</option>
+                                <option value="360p">360p</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>포맷</label>
+                            <select id="batchFormatSelect">
+                                <option value="mp4" selected>MP4</option>
+                                <option value="webm">WebM</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>속도</label>
+                            <select id="batchFrameSkipSelect">
+                                <option value="1" selected>고품질</option>
+                                <option value="2">2배속</option>
+                                <option value="3">3배속</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>대사 목록 (한 줄에 하나씩, 빈 줄은 무시)</label>
+                        <textarea id="batchInput" class="batch-input" placeholder="각 줄에 하나의 대사를 입력하세요. 예:
+
+안녕하세요, 반갑습니다.
+오늘 면접에 오신 것을 환영합니다.
+먼저 자기소개 부탁드립니다.
+지원 동기를 말씀해 주세요.
+마지막으로 질문 있으신가요?
+
+---
+또는 번호 형식도 가능합니다:
+1. 첫 번째 대사
+2. 두 번째 대사
+3. 세 번째 대사"></textarea>
+                        <div style="display: flex; justify-content: space-between; margin-top: 5px;">
+                            <span class="char-count" id="batchLineCount">0개 항목</span>
+                            <button class="secondary" style="width: auto; padding: 6px 15px; font-size: 0.85em;" onclick="parseBatchInput()">
+                                📋 항목 확인
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="settings-row">
+                        <button class="primary" id="batchStartBtn" onclick="startBatchRecording()">
+                            🚀 대량 녹화 시작
+                        </button>
+                        <button class="danger secondary" id="batchStopBtn" onclick="stopBatchRecording()" disabled>
+                            ⏹ 중지
+                        </button>
+                    </div>
+
+                    <div class="tips">
+                        <h3>💡 대량 녹화 팁</h3>
+                        <ul>
+                            <li>한 줄에 하나의 대사를 입력하세요</li>
+                            <li>빈 줄과 "---" 구분선은 자동으로 무시됩니다</li>
+                            <li>"1. ", "2) " 등 번호 접두사는 자동 제거됩니다</li>
+                            <li>순차적으로 처리되며, 완료된 영상은 바로 다운로드 가능합니다</li>
+                            <li>중지 버튼을 누르면 현재 작업 완료 후 중지됩니다</li>
+                        </ul>
+                    </div>
+
+                    <div class="tips" style="margin-top: 10px; background: rgba(17, 153, 142, 0.1); border-color: rgba(17, 153, 142, 0.3);">
+                        <h3 style="color: #11998e;">📁 파일 관리</h3>
+                        <ul>
+                            <li>파일명: 대사 앞 10글자 + 고유ID (예: 안녕하세요_a1b2c3d4.mp4)</li>
+                            <li>JSON 파일: 동일 이름의 .json 파일에 대사 전체 저장</li>
+                            <li>MP4 메타데이터: title/comment/description에도 저장</li>
+                            <li>JSON 내용: text, created_at, resolution, duration 등</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- 오른쪽: 배치 진행 상황 -->
+                <div class="panel">
+                    <h2>진행 상황</h2>
+
+                    <div class="batch-progress" id="batchProgress">
+                        <div class="batch-progress-header">
+                            <span class="batch-progress-title">대량 녹화 진행 중</span>
+                            <span class="batch-progress-count" id="batchProgressCount">0 / 0</span>
+                        </div>
+                        <div class="batch-progress-bar">
+                            <div class="batch-progress-fill" id="batchProgressFill"></div>
+                        </div>
+                        <div class="batch-progress-status" id="batchProgressStatus">준비 중...</div>
+                    </div>
+
+                    <div class="batch-list" id="batchList">
+                        <p style="color: #888; text-align: center; padding: 20px;">
+                            대사를 입력하고 "항목 확인" 버튼을 눌러주세요
+                        </p>
+                    </div>
+
+                    <button class="download-all-btn primary" id="downloadAllBtn" onclick="downloadAllVideos()" style="display: none;">
+                        📦 전체 다운로드 (ZIP)
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 캐시 업로드 탭 -->
+        <div id="uploadTab" class="tab-content">
+            <div class="main-content">
+                <!-- 왼쪽: 업로드 폼 -->
+                <div class="panel">
+                    <h2>비디오 캐시 업로드</h2>
+                    <p style="color: #888; margin-bottom: 15px;">생성된 영상을 서버 캐시에 업로드하여 빠르게 재사용할 수 있습니다.</p>
+
+                    <div class="form-group">
+                        <label>API 키 <span style="color: #ff6b6b;">*</span></label>
+                        <input type="password" id="uploadApiKey" placeholder="API 키를 입력하세요">
+                        <div style="font-size: 0.8em; color: #888; margin-top: 4px;">
+                            로컬 스토리지에 저장되어 다음 방문 시 자동 입력됩니다
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>대사 텍스트 <span style="color: #ff6b6b;">*</span></label>
+                        <textarea id="uploadText" placeholder="이 영상에 해당하는 대사를 입력하세요 (캐시 키 생성용)"></textarea>
+                        <div class="char-count" id="uploadCharCount">0자</div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>비디오 파일 <span style="color: #ff6b6b;">*</span></label>
+                        <div class="file-upload-area" id="fileUploadArea">
+                            <input type="file" id="uploadVideoFile" accept="video/mp4,video/webm" style="display: none;" onchange="handleFileSelect(event)">
+                            <div class="file-drop-zone" id="fileDropZone" onclick="document.getElementById('uploadVideoFile').click()">
+                                <div class="file-icon">📁</div>
+                                <div class="file-text">클릭하거나 파일을 드래그하여 업로드</div>
+                                <div class="file-info">MP4 또는 WebM (최대 100MB)</div>
+                            </div>
+                            <div class="selected-file" id="selectedFile" style="display: none;">
+                                <span class="file-name" id="selectedFileName"></span>
+                                <span class="file-size" id="selectedFileSize"></span>
+                                <button class="file-remove" onclick="clearFileSelection()">✕</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>소스 유형</label>
+                        <select id="uploadSource">
+                            <option value="lipsync" selected>Lipsync (기본)</option>
+                            <option value="heygen">HeyGen</option>
+                        </select>
+                    </div>
+
+                    <button class="primary" id="uploadBtn" onclick="uploadVideoToCache()">
+                        📤 캐시에 업로드
+                    </button>
+
+                    <div class="progress-container" id="uploadProgressContainer">
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="uploadProgressFill"></div>
+                        </div>
+                        <div class="status-text">
+                            <span id="uploadStatusText">준비 중...</span>
+                            <span id="uploadProgressPercent"></span>
+                        </div>
+                    </div>
+
+                    <div class="tips" style="margin-top: 15px;">
+                        <h3>💡 캐시 업로드 안내</h3>
+                        <ul>
+                            <li>업로드된 영상은 텍스트 기반 캐시 키로 저장됩니다</li>
+                            <li>동일한 텍스트로 요청 시 캐시된 영상이 반환됩니다</li>
+                            <li>MP4, WebM 형식 지원 (최대 100MB)</li>
+                            <li>업로드 후 반환된 URL로 영상에 접근할 수 있습니다</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- 오른쪽: 업로드 결과 -->
+                <div class="panel">
+                    <h2>업로드 결과</h2>
+
+                    <div id="uploadResultEmpty" style="color: #888; text-align: center; padding: 40px;">
+                        아직 업로드된 영상이 없습니다
+                    </div>
+
+                    <div id="uploadResult" style="display: none;">
+                        <div class="result-card">
+                            <div class="result-item">
+                                <span class="result-label">상태</span>
+                                <span class="result-value" id="resultStatus">-</span>
+                            </div>
+                            <div class="result-item">
+                                <span class="result-label">캐시 키</span>
+                                <span class="result-value" id="resultCacheKey" style="font-family: monospace; word-break: break-all;">-</span>
+                            </div>
+                            <div class="result-item">
+                                <span class="result-label">소스</span>
+                                <span class="result-value" id="resultSource">-</span>
+                            </div>
+                            <div class="result-item">
+                                <span class="result-label">비디오 URL</span>
+                                <a class="result-value result-link" id="resultVideoUrl" href="#" target="_blank">-</a>
+                            </div>
+                        </div>
+
+                        <div style="display: flex; gap: 10px; margin-top: 15px;">
+                            <button class="secondary" onclick="copyUploadedUrl()">🔗 URL 복사</button>
+                            <button class="btn-play secondary" onclick="previewUploadedVideo()">▶ 미리보기</button>
+                        </div>
+                    </div>
+
+                    <h2 style="margin-top: 25px;">업로드 기록</h2>
+                    <div class="video-list" id="uploadHistory">
+                        <p style="color: #888; text-align: center; padding: 15px;">
+                            업로드 기록이 없습니다
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 전역 변수
+        let socket = null;
+        let clientSid = null;
+        let ttsEngines = {};
+        let currentVideoUrl = null;
+        let generatedVideos = [];
+        let isLooping = false;  // 반복 재생 상태
+
+        // 배치 관련 변수
+        let batchItems = [];
+        let batchCurrentIndex = 0;
+        let batchRunning = false;
+        let batchResults = [];
+
+        // 초기화
+        document.addEventListener('DOMContentLoaded', function() {
+            initSocket();
+            loadOptions();
+            setupTextareas();
+        });
+
+        // 탭 전환
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+
+            document.querySelector(`.tab-btn[onclick="switchTab('${tabName}')"]`).classList.add('active');
+            document.getElementById(tabName + 'Tab').classList.add('active');
+        }
+
+        // WebSocket 초기화
+        function initSocket() {
+            socket = io();
+
+            socket.on('connect', () => {
+                console.log('WebSocket 연결됨');
+            });
+
+            socket.on('connected', (data) => {
+                clientSid = data.sid;
+                console.log('클라이언트 SID:', clientSid);
+            });
+
+            socket.on('queue_update', (data) => {
+                if (batchRunning) {
+                    updateBatchItemStatus(batchCurrentIndex, 'processing', data.message);
+                } else {
+                    document.getElementById('queueStatus').style.display = 'flex';
+                    document.getElementById('queueMessage').textContent = data.message;
+                }
+            });
+
+            socket.on('status', (data) => {
+                if (batchRunning) {
+                    updateBatchItemStatus(batchCurrentIndex, 'processing', data.message);
+                    document.getElementById('batchProgressStatus').textContent =
+                        `[${batchCurrentIndex + 1}/${batchItems.length}] ${data.message}`;
+                } else {
+                    document.getElementById('progressContainer').style.display = 'block';
+                    document.getElementById('queueStatus').style.display = 'none';
+                    document.getElementById('statusText').textContent = data.message;
+                    document.getElementById('progressFill').style.width = data.progress + '%';
+                    if (data.elapsed) {
+                        document.getElementById('elapsedTime').textContent = data.elapsed.toFixed(1) + '초';
+                    }
+                }
+            });
+
+            socket.on('complete', (data) => {
+                console.log('생성 완료:', data);
+
+                if (batchRunning) {
+                    // 배치 모드
+                    batchResults[batchCurrentIndex] = {
+                        url: data.video_url,
+                        success: true
+                    };
+                    updateBatchItemStatus(batchCurrentIndex, 'completed', '완료', data.video_url);
+
+                    // 다음 항목 처리
+                    batchCurrentIndex++;
+                    updateBatchProgress();
+
+                    if (batchCurrentIndex < batchItems.length && batchRunning) {
+                        setTimeout(() => processNextBatchItem(), 500);
+                    } else {
+                        finishBatchRecording();
+                    }
+                } else {
+                    // 단일 모드
+                    document.getElementById('progressFill').style.width = '100%';
+                    document.getElementById('statusText').textContent = '완료!';
+                    document.getElementById('generateBtn').disabled = false;
+                    document.getElementById('generateBtn').textContent = '🎬 영상 생성';
+
+                    currentVideoUrl = data.video_url;
+                    const previewVideo = document.getElementById('previewVideo');
+                    previewVideo.src = currentVideoUrl + '?' + Date.now();
+                    previewVideo.load();
+                    previewVideo.play();
+
+                    document.getElementById('downloadBtn').disabled = false;
+                    document.getElementById('copyUrlBtn').disabled = false;
+
+                    addVideoToList(data);
+
+                    setTimeout(() => {
+                        document.getElementById('progressContainer').style.display = 'none';
+                    }, 3000);
+                }
+            });
+
+            socket.on('error', (data) => {
+                console.error('오류:', data);
+
+                if (batchRunning) {
+                    batchResults[batchCurrentIndex] = {
+                        success: false,
+                        error: data.message
+                    };
+                    updateBatchItemStatus(batchCurrentIndex, 'error', '오류: ' + data.message);
+
+                    batchCurrentIndex++;
+                    updateBatchProgress();
+
+                    if (batchCurrentIndex < batchItems.length && batchRunning) {
+                        setTimeout(() => processNextBatchItem(), 500);
+                    } else {
+                        finishBatchRecording();
+                    }
+                } else {
+                    document.getElementById('statusText').textContent = '오류: ' + data.message;
+                    document.getElementById('generateBtn').disabled = false;
+                    document.getElementById('generateBtn').textContent = '🎬 영상 생성';
+                    document.getElementById('queueStatus').style.display = 'none';
+                }
+            });
+        }
+
+        // CosyVoice 연결 테스트
+        async function checkCosyVoiceConnection() {
+            try {
+                const response = await fetch('/api/check_cosyvoice', {
+                    method: 'GET',
+                    timeout: 5000
+                });
+                const result = await response.json();
+
+                if (!result.connected) {
+                    console.error('[CosyVoice] 연결 실패:', result.error || '서버 응답 없음');
+                    console.warn('[CosyVoice] URL:', result.url || 'N/A');
+                    return false;
+                }
+                console.log('[CosyVoice] 연결 성공');
+                return true;
+            } catch (e) {
+                console.error('[CosyVoice] 연결 테스트 실패:', e.message);
+                return false;
+            }
+        }
+
+        // 옵션 로드
+        async function loadOptions() {
+            try {
+                // TTS 엔진 로드
+                const enginesRes = await fetch('/api/tts_engines');
+                const engines = await enginesRes.json();
+                ttsEngines = {};
+                engines.forEach(e => { ttsEngines[e.id] = e; });
+
+                // CosyVoice 연결 테스트 (1회 시도)
+                const cosyvoiceEngine = engines.find(e => e.id === 'cosyvoice');
+                const elevenlabsEngine = engines.find(e => e.id === 'elevenlabs' && e.available);
+
+                let selectedEngine = engines[0]?.id;
+
+                if (cosyvoiceEngine && cosyvoiceEngine.available) {
+                    const isConnected = await checkCosyVoiceConnection();
+                    if (!isConnected && elevenlabsEngine) {
+                        console.warn('[TTS] CosyVoice 연결 실패 → ElevenLabs로 자동 전환');
+                        selectedEngine = 'elevenlabs';
+                    } else if (isConnected) {
+                        selectedEngine = 'cosyvoice';
+                    }
+                } else if (elevenlabsEngine) {
+                    selectedEngine = 'elevenlabs';
+                }
+
+                const engineOptions = engines.map(e =>
+                    `<option value="${e.id}" ${e.id === selectedEngine ? 'selected' : ''}>${e.name}</option>`
+                ).join('');
+
+                document.getElementById('ttsEngineSelect').innerHTML = engineOptions;
+                document.getElementById('batchTtsEngineSelect').innerHTML = engineOptions;
+
+                updateVoiceOptions();
+                updateBatchVoiceOptions();
+
+            } catch (error) {
+                console.error('옵션 로드 오류:', error);
+            }
+        }
+
+        // 음성 옵션 업데이트
+        function updateVoiceOptions() {
+            const engineId = document.getElementById('ttsEngineSelect').value;
+            const voiceSelect = document.getElementById('ttsVoiceSelect');
+            updateVoiceSelect(engineId, voiceSelect);
+        }
+
+        function updateBatchVoiceOptions() {
+            const engineId = document.getElementById('batchTtsEngineSelect').value;
+            const voiceSelect = document.getElementById('batchTtsVoiceSelect');
+            updateVoiceSelect(engineId, voiceSelect);
+        }
+
+        function updateVoiceSelect(engineId, voiceSelect) {
+            if (!engineId || !ttsEngines[engineId]) {
+                voiceSelect.innerHTML = '<option value="">엔진 선택</option>';
+                return;
+            }
+
+            const voices = ttsEngines[engineId].voices;
+            if (Array.isArray(voices)) {
+                voiceSelect.innerHTML = voices.map(voice =>
+                    `<option value="${voice}">${voice}</option>`
+                ).join('');
+            } else {
+                voiceSelect.innerHTML = Object.entries(voices).map(([id, name]) =>
+                    `<option value="${id}">${name}</option>`
+                ).join('');
+            }
+        }
+
+        // 텍스트 영역 설정
+        function setupTextareas() {
+            const textarea = document.getElementById('scriptInput');
+            const charCount = document.getElementById('charCount');
+
+            textarea.addEventListener('input', () => {
+                const len = textarea.value.length;
+                charCount.textContent = `${len} / 1000자`;
+                charCount.className = len > 1000 ? 'char-count warning' : 'char-count';
+            });
+
+            const batchInput = document.getElementById('batchInput');
+            batchInput.addEventListener('input', () => {
+                const lines = parseBatchText(batchInput.value);
+                document.getElementById('batchLineCount').textContent = `${lines.length}개 항목`;
+            });
+        }
+
+        // 배치 텍스트 파싱
+        function parseBatchText(text) {
+            return text.split('\n')
+                .map(line => line.trim())
+                .filter(line => line && line !== '---' && !line.match(/^-+$/))
+                .map(line => {
+                    // 번호 접두사 제거 (1. , 1) , 1: , (1) 등)
+                    return line.replace(/^[\d]+[\.\)\:\-]\s*/, '').replace(/^\([\d]+\)\s*/, '').trim();
+                })
+                .filter(line => line.length > 0);
+        }
+
+        // 배치 입력 파싱 및 미리보기
+        function parseBatchInput() {
+            const text = document.getElementById('batchInput').value;
+            batchItems = parseBatchText(text);
+
+            const batchList = document.getElementById('batchList');
+
+            if (batchItems.length === 0) {
+                batchList.innerHTML = '<p style="color: #888; text-align: center; padding: 20px;">입력된 항목이 없습니다</p>';
+                return;
+            }
+
+            batchList.innerHTML = batchItems.map((item, index) => `
+                <div class="batch-item" id="batchItem${index}">
+                    <div class="number">${index + 1}</div>
+                    <div class="info">
+                        <div class="text">${escapeHtml(item)}</div>
+                        <div class="meta" id="batchMeta${index}">대기 중</div>
+                    </div>
+                    <div class="actions" id="batchActions${index}"></div>
+                </div>
+            `).join('');
+
+            document.getElementById('batchLineCount').textContent = `${batchItems.length}개 항목`;
+        }
+
+        // HTML 이스케이프
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // 배치 녹화 시작
+        async function startBatchRecording() {
+            if (batchItems.length === 0) {
+                parseBatchInput();
+                if (batchItems.length === 0) {
+                    alert('녹화할 항목을 입력해주세요.');
+                    return;
+                }
+            }
+
+            batchRunning = true;
+            batchCurrentIndex = 0;
+            batchResults = new Array(batchItems.length).fill(null);
+
+            document.getElementById('batchStartBtn').disabled = true;
+            document.getElementById('batchStopBtn').disabled = false;
+            document.getElementById('batchProgress').classList.add('active');
+            document.getElementById('downloadAllBtn').style.display = 'none';
+
+            updateBatchProgress();
+            processNextBatchItem();
+        }
+
+        // 배치 녹화 중지
+        function stopBatchRecording() {
+            batchRunning = false;
+            document.getElementById('batchStopBtn').disabled = true;
+            document.getElementById('batchProgressStatus').textContent = '중지 요청됨... 현재 작업 완료 후 중지됩니다.';
+        }
+
+        // 다음 배치 항목 처리
+        async function processNextBatchItem() {
+            if (!batchRunning || batchCurrentIndex >= batchItems.length) {
+                return;
+            }
+
+            const text = batchItems[batchCurrentIndex];
+            const avatarPath = 'auto';  // 자동 선택
+            const ttsEngine = document.getElementById('batchTtsEngineSelect').value;
+            const ttsVoice = document.getElementById('batchTtsVoiceSelect').value;
+            const resolution = document.getElementById('batchResolutionSelect').value;
+            const outputFormat = document.getElementById('batchFormatSelect').value;
+            const frameSkip = parseInt(document.getElementById('batchFrameSkipSelect').value);
+
+            updateBatchItemStatus(batchCurrentIndex, 'processing', '요청 중...');
+
+            try {
+                const response = await fetch('/api/record', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        text: text,
+                        avatar_path: avatarPath,
+                        tts_engine: ttsEngine,
+                        tts_voice: ttsVoice,
+                        resolution: resolution,
+                        output_format: outputFormat,
+                        frame_skip: frameSkip,
+                        filename: `batch_${String(batchCurrentIndex + 1).padStart(3, '0')}`,
+                        sid: clientSid
+                    })
+                });
+
+                const result = await response.json();
+
+                if (!result.success) {
+                    throw new Error(result.error || '요청 실패');
+                }
+
+            } catch (error) {
+                console.error('배치 항목 처리 오류:', error);
+                batchResults[batchCurrentIndex] = {
+                    success: false,
+                    error: error.message
+                };
+                updateBatchItemStatus(batchCurrentIndex, 'error', '오류: ' + error.message);
+
+                batchCurrentIndex++;
+                updateBatchProgress();
+
+                if (batchCurrentIndex < batchItems.length && batchRunning) {
+                    setTimeout(() => processNextBatchItem(), 500);
+                } else {
+                    finishBatchRecording();
+                }
+            }
+        }
+
+        // 배치 항목 상태 업데이트
+        function updateBatchItemStatus(index, status, message, videoUrl = null) {
+            const item = document.getElementById(`batchItem${index}`);
+            const meta = document.getElementById(`batchMeta${index}`);
+            const actions = document.getElementById(`batchActions${index}`);
+
+            if (!item) return;
+
+            item.className = `batch-item ${status}`;
+            meta.textContent = message;
+
+            if (status === 'completed' && videoUrl) {
+                actions.innerHTML = `
+                    <button class="btn-play" onclick="playBatchVideo('${videoUrl}')">▶</button>
+                    <button class="btn-download" onclick="downloadVideoUrl('${videoUrl}')">📥</button>
+                `;
+            }
+        }
+
+        // 배치 진행률 업데이트
+        function updateBatchProgress() {
+            const completed = batchResults.filter(r => r !== null).length;
+            const total = batchItems.length;
+            const percent = total > 0 ? (completed / total * 100) : 0;
+
+            document.getElementById('batchProgressCount').textContent = `${completed} / ${total}`;
+            document.getElementById('batchProgressFill').style.width = `${percent}%`;
+        }
+
+        // 배치 녹화 완료
+        function finishBatchRecording() {
+            batchRunning = false;
+
+            document.getElementById('batchStartBtn').disabled = false;
+            document.getElementById('batchStopBtn').disabled = true;
+
+            const successCount = batchResults.filter(r => r && r.success).length;
+            const errorCount = batchResults.filter(r => r && !r.success).length;
+
+            document.getElementById('batchProgressStatus').textContent =
+                `완료! 성공: ${successCount}개, 실패: ${errorCount}개`;
+
+            if (successCount > 0) {
+                document.getElementById('downloadAllBtn').style.display = 'block';
+            }
+        }
+
+        // 배치 비디오 재생
+        function playBatchVideo(url) {
+            const previewVideo = document.getElementById('previewVideo');
+            previewVideo.src = url + '?' + Date.now();
+            previewVideo.load();
+            previewVideo.play();
+
+            // 단일 탭으로 전환
+            switchTab('single');
+            currentVideoUrl = url;
+            document.getElementById('downloadBtn').disabled = false;
+            document.getElementById('copyUrlBtn').disabled = false;
+        }
+
+        // 전체 다운로드 (개별 파일)
+        function downloadAllVideos() {
+            const successResults = batchResults.filter(r => r && r.success);
+
+            if (successResults.length === 0) {
+                alert('다운로드할 영상이 없습니다.');
+                return;
+            }
+
+            // 순차적으로 다운로드 (브라우저 제한 우회)
+            successResults.forEach((result, index) => {
+                setTimeout(() => {
+                    downloadVideoUrl(result.url);
+                }, index * 500);
+            });
+        }
+
+        // === 단일 녹화 함수들 ===
+
+        // 예시 텍스트 선택
+        function selectExampleText() {
+            const select = document.getElementById('exampleTextSelect');
+            const textarea = document.getElementById('scriptInput');
+            if (select.value) {
+                textarea.value = select.value;
+                textarea.focus();
+                // 글자 수 업데이트
+                document.getElementById('charCount').textContent = `${select.value.length} / 1000자`;
+                // 선택 후 드롭다운 초기화
+                select.selectedIndex = 0;
+            }
+        }
+
+        async function generateVideo() {
+            const text = document.getElementById('scriptInput').value.trim();
+            if (!text) {
+                alert('대사를 입력해주세요.');
+                return;
+            }
+
+            if (text.length > 1000) {
+                alert('텍스트가 너무 깁니다. 1000자 이내로 입력해주세요.');
+                return;
+            }
+
+            const avatarPath = 'auto';  // 자동 선택
+            const ttsEngine = document.getElementById('ttsEngineSelect').value;
+            const ttsVoice = document.getElementById('ttsVoiceSelect').value;
+            const resolution = document.getElementById('resolutionSelect').value;
+            const outputFormat = document.getElementById('formatSelect').value;
+            const frameSkip = parseInt(document.getElementById('frameSkipSelect').value);
+            const filename = document.getElementById('filenameInput').value.trim();
+
+            document.getElementById('generateBtn').disabled = true;
+            document.getElementById('generateBtn').textContent = '생성 중...';
+            document.getElementById('progressContainer').style.display = 'block';
+            document.getElementById('progressFill').style.width = '0%';
+            document.getElementById('statusText').textContent = '요청 중...';
+
+            try {
+                const response = await fetch('/api/record', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        text: text,
+                        avatar_path: avatarPath,
+                        tts_engine: ttsEngine,
+                        tts_voice: ttsVoice,
+                        resolution: resolution,
+                        output_format: outputFormat,
+                        frame_skip: frameSkip,
+                        filename: filename || null,
+                        sid: clientSid
+                    })
+                });
+
+                const result = await response.json();
+
+                if (!result.success) {
+                    throw new Error(result.error || '요청 실패');
+                }
+
+            } catch (error) {
+                console.error('생성 오류:', error);
+                document.getElementById('statusText').textContent = '오류: ' + error.message;
+                document.getElementById('generateBtn').disabled = false;
+                document.getElementById('generateBtn').textContent = '🎬 영상 생성';
+            }
+        }
+
+        function addVideoToList(data) {
+            const videoList = document.getElementById('videoList');
+
+            if (generatedVideos.length === 0) {
+                videoList.innerHTML = '';
+            }
+
+            const videoInfo = {
+                url: data.video_url,
+                time: new Date().toLocaleTimeString(),
+                duration: data.elapsed ? data.elapsed.toFixed(1) + '초' : '-'
+            };
+            generatedVideos.unshift(videoInfo);
+
+            const item = document.createElement('div');
+            item.className = 'video-item';
+            item.innerHTML = `
+                <div class="info">
+                    <div class="name">영상 ${generatedVideos.length}</div>
+                    <div class="meta">${videoInfo.time} • ${videoInfo.duration}</div>
+                </div>
+                <div class="actions">
+                    <button class="btn-play" onclick="playVideo('${videoInfo.url}')">▶</button>
+                    <button class="btn-download" onclick="downloadVideoUrl('${videoInfo.url}')">📥</button>
+                </div>
+            `;
+            videoList.insertBefore(item, videoList.firstChild);
+        }
+
+        function playVideo(url) {
+            const previewVideo = document.getElementById('previewVideo');
+            previewVideo.src = url + '?' + Date.now();
+            previewVideo.loop = false;  // 새 영상 로드시 반복 초기화
+            isLooping = false;  // 반복 상태 초기화
+            previewVideo.load();
+            previewVideo.play();
+            currentVideoUrl = url;
+            document.getElementById('downloadBtn').disabled = false;
+            document.getElementById('copyUrlBtn').disabled = false;
+            document.getElementById('loopBtn').disabled = false;
+            // 반복 버튼 상태 초기화
+            const loopBtn = document.getElementById('loopBtn');
+            loopBtn.textContent = '🔁 반복 재생';
+            loopBtn.style.background = '';
+            loopBtn.style.color = '';
+        }
+
+        function downloadVideo() {
+            if (currentVideoUrl) {
+                downloadVideoUrl(currentVideoUrl);
+            }
+        }
+
+        async function downloadVideoUrl(url) {
+            // 다운로드 전에 파일을 영구 저장 (자동 정리 방지)
+            try {
+                await fetch('/api/video/save', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ video_url: url })
+                });
+            } catch (e) {
+                console.warn('파일 저장 실패 (다운로드는 계속):', e);
+            }
+
+            const ext = url.includes('.webm') ? '.webm' : '.mp4';
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'avatar_video_' + Date.now() + ext;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        }
+
+        function copyVideoUrl() {
+            if (currentVideoUrl) {
+                const fullUrl = window.location.origin + currentVideoUrl;
+                navigator.clipboard.writeText(fullUrl).then(() => {
+                    const btn = document.getElementById('copyUrlBtn');
+                    btn.textContent = '✓ 복사됨';
+                    setTimeout(() => {
+                        btn.textContent = '🔗 URL 복사';
+                    }, 2000);
+                });
+            }
+        }
+
+        function toggleLoop() {
+            const video = document.getElementById('previewVideo');
+            const btn = document.getElementById('loopBtn');
+            isLooping = !isLooping;
+            video.loop = isLooping;
+
+            if (isLooping) {
+                btn.textContent = '🔁 반복 중';
+                btn.style.background = '#4ecca3';
+                btn.style.color = '#1a1a2e';
+            } else {
+                btn.textContent = '🔁 반복 재생';
+                btn.style.background = '';
+                btn.style.color = '';
+            }
+            console.log('Loop toggled:', isLooping);
+        }
+
+        // 비디오 종료 시 반복 재생 처리 (video.loop 속성 백업)
+        document.addEventListener('DOMContentLoaded', function() {
+            const video = document.getElementById('previewVideo');
+            video.addEventListener('ended', function() {
+                if (isLooping) {
+                    video.currentTime = 0;
+                    video.play();
+                }
+            });
+
+            // 업로드 탭 초기화
+            initUploadTab();
+        });
+
+        // ========== 캐시 업로드 기능 ==========
+
+        let uploadedVideoUrl = null;
+        let uploadHistory = [];
+        let selectedFile = null;
+
+        // 업로드 탭 초기화
+        function initUploadTab() {
+            // API 키 로드
+            const savedApiKey = localStorage.getItem('videoCacheApiKey');
+            if (savedApiKey) {
+                document.getElementById('uploadApiKey').value = savedApiKey;
+            }
+
+            // 업로드 텍스트 글자 수 카운트
+            const uploadText = document.getElementById('uploadText');
+            uploadText.addEventListener('input', () => {
+                document.getElementById('uploadCharCount').textContent = `${uploadText.value.length}자`;
+            });
+
+            // 드래그 앤 드롭 설정
+            const dropZone = document.getElementById('fileDropZone');
+
+            dropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                dropZone.classList.add('dragover');
+            });
+
+            dropZone.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                dropZone.classList.remove('dragover');
+            });
+
+            dropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                dropZone.classList.remove('dragover');
+                const files = e.dataTransfer.files;
+                if (files.length > 0) {
+                    handleFileSelection(files[0]);
+                }
+            });
+
+            // 업로드 기록 로드
+            const savedHistory = localStorage.getItem('uploadHistory');
+            if (savedHistory) {
+                uploadHistory = JSON.parse(savedHistory);
+                renderUploadHistory();
+            }
+        }
+
+        // 파일 선택 핸들러
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (file) {
+                handleFileSelection(file);
+            }
+        }
+
+        function handleFileSelection(file) {
+            // 파일 유형 검증
+            if (!file.type.match(/video\/(mp4|webm)/)) {
+                alert('MP4 또는 WebM 파일만 업로드할 수 있습니다.');
+                return;
+            }
+
+            // 파일 크기 검증 (100MB)
+            const maxSize = 100 * 1024 * 1024;
+            if (file.size > maxSize) {
+                alert('파일 크기가 100MB를 초과합니다.');
+                return;
+            }
+
+            selectedFile = file;
+
+            // UI 업데이트
+            document.getElementById('fileDropZone').style.display = 'none';
+            document.getElementById('selectedFile').style.display = 'flex';
+            document.getElementById('selectedFileName').textContent = file.name;
+            document.getElementById('selectedFileSize').textContent = formatFileSize(file.size);
+        }
+
+        function clearFileSelection() {
+            selectedFile = null;
+            document.getElementById('uploadVideoFile').value = '';
+            document.getElementById('fileDropZone').style.display = 'block';
+            document.getElementById('selectedFile').style.display = 'none';
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        }
+
+        // 캐시에 업로드
+        async function uploadVideoToCache() {
+            const apiKey = document.getElementById('uploadApiKey').value.trim();
+            const text = document.getElementById('uploadText').value.trim();
+            const source = document.getElementById('uploadSource').value;
+
+            // 검증
+            if (!apiKey) {
+                alert('API 키를 입력해주세요.');
+                document.getElementById('uploadApiKey').focus();
+                return;
+            }
+
+            if (!text) {
+                alert('대사 텍스트를 입력해주세요.');
+                document.getElementById('uploadText').focus();
+                return;
+            }
+
+            if (!selectedFile) {
+                alert('비디오 파일을 선택해주세요.');
+                return;
+            }
+
+            // API 키 저장
+            localStorage.setItem('videoCacheApiKey', apiKey);
+
+            // UI 업데이트
+            document.getElementById('uploadBtn').disabled = true;
+            document.getElementById('uploadBtn').textContent = '업로드 중...';
+            document.getElementById('uploadProgressContainer').style.display = 'block';
+            document.getElementById('uploadProgressFill').style.width = '0%';
+            document.getElementById('uploadStatusText').textContent = '업로드 준비 중...';
+
+            try {
+                // FormData 생성
+                const formData = new FormData();
+                formData.append('text', text);
+                formData.append('video', selectedFile);
+                formData.append('source', source);
+
+                // XMLHttpRequest로 업로드 (진행률 추적)
+                const xhr = new XMLHttpRequest();
+
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        const percent = Math.round((e.loaded / e.total) * 100);
+                        document.getElementById('uploadProgressFill').style.width = percent + '%';
+                        document.getElementById('uploadProgressPercent').textContent = percent + '%';
+                        document.getElementById('uploadStatusText').textContent =
+                            percent < 100 ? '업로드 중...' : '서버 처리 중...';
+                    }
+                });
+
+                const result = await new Promise((resolve, reject) => {
+                    xhr.onload = () => {
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                            try {
+                                resolve(JSON.parse(xhr.responseText));
+                            } catch (e) {
+                                reject(new Error('응답 파싱 오류'));
+                            }
+                        } else {
+                            try {
+                                const err = JSON.parse(xhr.responseText);
+                                reject(new Error(err.error || `HTTP ${xhr.status}`));
+                            } catch (e) {
+                                reject(new Error(`HTTP ${xhr.status}`));
+                            }
+                        }
+                    };
+                    xhr.onerror = () => reject(new Error('네트워크 오류'));
+                    xhr.ontimeout = () => reject(new Error('요청 시간 초과'));
+
+                    xhr.open('POST', 'https://mindprep.co.kr/api/video-cache/upload');
+                    xhr.setRequestHeader('X-API-Key', apiKey);
+                    xhr.timeout = 300000; // 5분
+                    xhr.send(formData);
+                });
+
+                if (result.success) {
+                    // 성공
+                    document.getElementById('uploadProgressFill').style.width = '100%';
+                    document.getElementById('uploadStatusText').textContent = '업로드 완료!';
+
+                    uploadedVideoUrl = result.video_url;
+
+                    // 결과 표시
+                    document.getElementById('uploadResultEmpty').style.display = 'none';
+                    document.getElementById('uploadResult').style.display = 'block';
+                    document.getElementById('resultStatus').textContent = '✅ 성공';
+                    document.getElementById('resultStatus').style.color = '#4caf50';
+                    document.getElementById('resultCacheKey').textContent = result.cache_key || '-';
+                    document.getElementById('resultSource').textContent = result.source || source;
+                    document.getElementById('resultVideoUrl').textContent = result.video_url;
+                    document.getElementById('resultVideoUrl').href = result.video_url;
+
+                    // 기록 추가
+                    addToUploadHistory({
+                        text: text.substring(0, 50) + (text.length > 50 ? '...' : ''),
+                        source: source,
+                        url: result.video_url,
+                        cacheKey: result.cache_key,
+                        time: new Date().toLocaleString()
+                    });
+
+                    // 입력 초기화
+                    document.getElementById('uploadText').value = '';
+                    document.getElementById('uploadCharCount').textContent = '0자';
+                    clearFileSelection();
+
+                } else {
+                    throw new Error(result.error || '업로드 실패');
+                }
+
+            } catch (error) {
+                console.error('업로드 오류:', error);
+                document.getElementById('uploadStatusText').textContent = '오류: ' + error.message;
+                document.getElementById('uploadProgressFill').style.width = '0%';
+
+                // 결과에 오류 표시
+                document.getElementById('uploadResultEmpty').style.display = 'none';
+                document.getElementById('uploadResult').style.display = 'block';
+                document.getElementById('resultStatus').textContent = '❌ 실패: ' + error.message;
+                document.getElementById('resultStatus').style.color = '#e74c3c';
+
+            } finally {
+                document.getElementById('uploadBtn').disabled = false;
+                document.getElementById('uploadBtn').textContent = '📤 캐시에 업로드';
+
+                setTimeout(() => {
+                    document.getElementById('uploadProgressContainer').style.display = 'none';
+                }, 3000);
+            }
+        }
+
+        // 업로드 기록 추가
+        function addToUploadHistory(item) {
+            uploadHistory.unshift(item);
+            if (uploadHistory.length > 20) {
+                uploadHistory = uploadHistory.slice(0, 20);
+            }
+            localStorage.setItem('uploadHistory', JSON.stringify(uploadHistory));
+            renderUploadHistory();
+        }
+
+        // 업로드 기록 렌더링
+        function renderUploadHistory() {
+            const container = document.getElementById('uploadHistory');
+
+            if (uploadHistory.length === 0) {
+                container.innerHTML = '<p style="color: #888; text-align: center; padding: 15px;">업로드 기록이 없습니다</p>';
+                return;
+            }
+
+            container.innerHTML = uploadHistory.map((item, index) => `
+                <div class="video-item">
+                    <div class="info">
+                        <div class="name">${escapeHtml(item.text)}</div>
+                        <div class="meta">${item.time} • ${item.source}</div>
+                    </div>
+                    <div class="actions">
+                        <button class="btn-play" onclick="window.open('${item.url}', '_blank')">▶</button>
+                        <button class="secondary" style="width:auto;padding:6px 10px;font-size:0.8em" onclick="copyToClipboard('${item.url}')">🔗</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // 업로드된 URL 복사
+        function copyUploadedUrl() {
+            if (uploadedVideoUrl) {
+                copyToClipboard(uploadedVideoUrl);
+                const btn = event.target;
+                const originalText = btn.textContent;
+                btn.textContent = '✓ 복사됨';
+                setTimeout(() => { btn.textContent = originalText; }, 2000);
+            }
+        }
+
+        // 클립보드 복사
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                console.log('클립보드에 복사됨:', text);
+            }).catch(err => {
+                console.error('복사 실패:', err);
+            });
+        }
+
+        // 업로드된 비디오 미리보기
+        function previewUploadedVideo() {
+            if (uploadedVideoUrl) {
+                window.open(uploadedVideoUrl, '_blank');
+            }
+        }
+    </script>
+</body>
+</html>

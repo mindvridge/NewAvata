@@ -22,8 +22,10 @@ if sys.platform == 'win32':
 import time
 import json
 import base64
+import math
 import threading
 import subprocess
+import psutil
 import signal
 import pickle
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -32,6 +34,7 @@ import numpy as np
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_file, Response, stream_with_context
 from flask_socketio import SocketIO, emit
+from flask_cors import CORS
 from dotenv import load_dotenv
 from tqdm import tqdm
 
@@ -51,6 +54,7 @@ face_parsing = None
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'realtime-lipsync-secret'
+CORS(app, origins="*")  # 모든 도메인에서 API 접근 허용
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # 전역 상태
@@ -79,6 +83,70 @@ CENTER_CROP_COORDS = {
 # 클라이언트별 상태 관리 (멀티 브라우저 지원)
 client_sessions = {}  # {sid: {'cancelled': False, 'start_time': None, 'generating': False}}
 generation_lock = threading.Lock()  # 동시 생성 방지 락
+
+# ===== 비디오 파일 자동 정리 설정 =====
+VIDEO_CLEANUP_ENABLED = True  # 자동 정리 활성화
+VIDEO_CLEANUP_TTL = 600  # 기본 TTL: 10분 (초)
+VIDEO_CLEANUP_INTERVAL = 60  # 정리 주기: 1분마다 확인
+VIDEO_CLEANUP_DIR = "results/realtime"  # 정리 대상 디렉토리
+
+# ===== 외부 접근용 BASE_URL 설정 =====
+# Cloudflare Tunnel 등 외부에서 접근 시 전체 URL 반환을 위해 설정
+# 환경변수 LIPSYNC_BASE_URL로 설정 가능 (예: https://api.yourdomain.com)
+LIPSYNC_BASE_URL = os.getenv('LIPSYNC_BASE_URL', '')  # 빈 문자열이면 상대 경로 사용
+print(f"[설정] LIPSYNC_BASE_URL = '{LIPSYNC_BASE_URL}'" if LIPSYNC_BASE_URL else "[설정] LIPSYNC_BASE_URL 미설정 (상대 경로 사용)")
+
+def build_video_url(video_filename, use_full_url=None):
+    """
+    비디오 파일명으로 URL 생성
+
+    Args:
+        video_filename: 비디오 파일명 (예: output_123.mp4)
+        use_full_url: True면 전체 URL, False면 상대 경로, None이면 BASE_URL 설정에 따름
+
+    Returns:
+        URL 문자열 (예: /video/output_123.mp4 또는 https://api.domain.com/video/output_123.mp4)
+    """
+    relative_url = f'/video/{video_filename}'
+
+    if use_full_url is True or (use_full_url is None and LIPSYNC_BASE_URL):
+        return f'{LIPSYNC_BASE_URL.rstrip("/")}{relative_url}'
+    return relative_url
+
+def cleanup_old_videos():
+    """오래된 비디오 파일 자동 정리 (백그라운드 스레드)"""
+    import glob
+
+    while VIDEO_CLEANUP_ENABLED:
+        try:
+            cleanup_dir = Path(VIDEO_CLEANUP_DIR)
+            if cleanup_dir.exists():
+                current_time = time.time()
+                cleaned_count = 0
+
+                # mp4, webm, json, wav 파일 정리
+                for pattern in ["*.mp4", "*.webm", "*.json", "temp_*.wav"]:
+                    for file_path in cleanup_dir.glob(pattern):
+                        try:
+                            file_age = current_time - file_path.stat().st_mtime
+                            if file_age > VIDEO_CLEANUP_TTL:
+                                file_path.unlink()
+                                cleaned_count += 1
+                        except Exception as e:
+                            pass  # 삭제 실패 시 무시 (사용 중인 파일 등)
+
+                if cleaned_count > 0:
+                    print(f"[자동 정리] {cleaned_count}개 파일 삭제됨 (TTL: {VIDEO_CLEANUP_TTL}초)")
+
+        except Exception as e:
+            print(f"[자동 정리 오류] {e}")
+
+        time.sleep(VIDEO_CLEANUP_INTERVAL)
+
+# 백그라운드 정리 스레드 시작
+cleanup_thread = threading.Thread(target=cleanup_old_videos, daemon=True)
+cleanup_thread.start()
+print(f"[자동 정리] 백그라운드 스레드 시작 (TTL: {VIDEO_CLEANUP_TTL}초, 주기: {VIDEO_CLEANUP_INTERVAL}초)")
 
 # 큐 시스템
 from queue import Queue
@@ -572,8 +640,27 @@ class LipsyncEngine:
         timings['whisper_feature'] = time.time() - t0
 
         num_frames = len(whisper_chunks)
-        print(f"생성할 프레임 수: {num_frames}")
-        
+
+        # ===== 동기화 디버그 로그 =====
+        if isinstance(audio_input, tuple):
+            audio_numpy_dbg, sr_dbg = audio_input
+            audio_duration_dbg = len(audio_numpy_dbg) / sr_dbg
+        else:
+            audio_duration_dbg = librosa_length / 16000
+        video_duration_dbg = num_frames / fps
+        sync_diff = video_duration_dbg - audio_duration_dbg
+        print(f"=" * 50)
+        print(f"[동기화 분석]")
+        print(f"  오디오 샘플 수: {librosa_length}")
+        print(f"  오디오 길이: {audio_duration_dbg:.3f}초")
+        print(f"  비디오 프레임 수: {num_frames}")
+        print(f"  비디오 FPS: {fps}")
+        print(f"  비디오 길이: {video_duration_dbg:.3f}초")
+        print(f"  차이 (비디오-오디오): {sync_diff*1000:.1f}ms")
+        if abs(sync_diff) > 0.04:  # 40ms 이상 차이
+            print(f"  ⚠️ 경고: 동기화 차이가 큼!")
+        print(f"=" * 50)
+
         if num_frames == 0:
             raise ValueError("오디오에서 프레임을 생성할 수 없습니다. 오디오 파일이 너무 짧거나 손상되었을 수 있습니다.")
         
@@ -748,6 +835,14 @@ class LipsyncEngine:
         fade_frames = min(8, len(res_frame_list) // 4)
         total_frames = len(res_frame_list)
 
+        # 아바타 영상 길이 (new_talk_short=5초, new_talk_long=10초)
+        avatar_frames_count = len(frames_list)
+        avatar_duration = avatar_frames_count / fps
+        print(f"[아바타 영상] {avatar_frames_count} 프레임 ({avatar_duration:.1f}초)")
+
+        # idle 프레임 (첫 프레임) - 시작/끝 전환용
+        idle_frame = frames_list[0].copy()
+
         # 마스크/crop_box 프리컴퓨트 (첫 프레임에서 1회만 계산 후 재사용)
         # 아바타 프레임은 동일한 얼굴 위치이므로 마스크 1개로 충분
         mask_cache = precomputed.get('mask_cache', None)
@@ -779,6 +874,7 @@ class LipsyncEngine:
             i, res_frame = args
             idx = i % len(coords_list)
             coord = coords_list[idx]
+            # talk 영상 프레임 사용 (new_talk_short 또는 new_talk_long)
             original_frame = frames_list[idx].copy()
 
             x1, y1, x2, y2 = [int(c) for c in coord]
@@ -824,20 +920,8 @@ class LipsyncEngine:
                     fp=face_parsing
                 )
 
-            # 페이드 인/아웃 적용
-            if i < fade_frames:
-                alpha = i / fade_frames
-                result_frame = cv2.addWeighted(
-                    original_frame, 1 - alpha,
-                    result_frame, alpha, 0
-                )
-            elif i >= total_frames - fade_frames:
-                remaining = total_frames - i - 1
-                alpha = remaining / fade_frames
-                result_frame = cv2.addWeighted(
-                    original_frame, 1 - alpha,
-                    result_frame, alpha, 0
-                )
+            # 페이드 인/아웃 제거 - 립싱크 처음부터 바로 적용
+            # (페이드아웃은 패딩 구간의 보간 로직에서 처리됨)
 
             return (i, result_frame)
 
@@ -858,38 +942,110 @@ class LipsyncEngine:
 
         timings['blending'] = time.time() - t0
 
-        # ========== 아바타 영상 길이까지 원본 프레임 패딩 ==========
-        # 립싱크 영상이 아바타 원본 영상보다 짧으면, 나머지는 원본 프레임으로 채움
-        avatar_total_frames = len(frames_list)
-        lipsync_frames = len(generated_frames)
+        # ========== 립싱크 끝: 유지 + 페이드아웃 (원본 입모양으로 복귀) ==========
+        # 몸은 계속 움직이고, 입 부분만 마지막 립싱크 상태 유지 후 페이드아웃
+        # 1. 마지막 립싱크 입모양을 잠시 유지 (0.2초) - 몸은 계속 움직임
+        # 2. 그 후 원본 영상의 입모양으로 부드럽게 전환 (0.3초)
+        hold_duration = 0.2  # 마지막 립싱크 유지 시간
+        fadeout_duration = 0.3  # 페이드아웃 시간
 
-        if lipsync_frames < avatar_total_frames:
-            padding_frames = avatar_total_frames - lipsync_frames
-            print(f"[프레임 패딩] 립싱크 {lipsync_frames}프레임 → 아바타 {avatar_total_frames}프레임 ({padding_frames}프레임 추가)")
+        hold_frames = int(fps * hold_duration)
+        fadeout_frames = int(fps * fadeout_duration)
+        total_transition_frames = hold_frames + fadeout_frames
+        total_transition_frames = min(total_transition_frames, len(generated_frames) // 3)  # 최대 전체의 1/3
 
-            # 마지막 립싱크 프레임에서 원본으로 부드럽게 전환 (페이드 아웃)
-            fade_out_frames = min(8, padding_frames)  # 페이드 아웃 프레임 수
+        # 비율 조정 (총 프레임이 줄어들었을 경우)
+        if total_transition_frames < hold_frames + fadeout_frames:
+            ratio = total_transition_frames / (hold_frames + fadeout_frames)
+            hold_frames = int(hold_frames * ratio)
+            fadeout_frames = total_transition_frames - hold_frames
 
-            for i in range(padding_frames):
-                frame_idx = lipsync_frames + i
-                original_idx = frame_idx % avatar_total_frames
+        if total_transition_frames > 0 and len(res_frame_list) > 0:
+            print(f"[립싱크 종료 처리] 유지 {hold_frames}프레임 ({hold_frames/fps:.2f}초) + 페이드아웃 {fadeout_frames}프레임 ({fadeout_frames/fps:.2f}초)")
+
+            # 마지막 립싱크 입 영역 (256x256 얼굴 영역)
+            last_res_frame = res_frame_list[-1]
+            last_res_frame_uint8 = last_res_frame.astype(np.uint8)
+            gaussian = cv2.GaussianBlur(last_res_frame_uint8, (3, 3), 1.5)
+            last_mouth_sharpened = cv2.addWeighted(last_res_frame_uint8, sharpen_alpha, gaussian, sharpen_beta, 0)
+
+            start_transition = len(generated_frames) - total_transition_frames
+
+            for i in range(total_transition_frames):
+                frame_idx_in_list = start_transition + i
+                # 원본 프레임 인덱스 (아바타 영상 순환) - 몸은 계속 움직임
+                original_idx = frame_idx_in_list % len(frames_list)
+                coord = coords_list[original_idx]
                 original_frame = frames_list[original_idx].copy()
 
-                # 해상도 조정 (필요시)
-                if original_frame.shape[:2] != generated_frames[0].shape[:2]:
-                    original_frame = cv2.resize(original_frame,
-                        (generated_frames[0].shape[1], generated_frames[0].shape[0]))
+                x1, y1, x2, y2 = [int(c) for c in coord]
+                target_size = (x2 - x1, y2 - y1)
 
-                # 처음 몇 프레임은 립싱크 마지막 프레임과 블렌딩 (부드러운 전환)
-                if i < fade_out_frames and len(generated_frames) > 0:
-                    alpha = i / fade_out_frames  # 0 → 1
-                    last_lipsync_frame = generated_frames[-1]
-                    blended = cv2.addWeighted(last_lipsync_frame, 1 - alpha, original_frame, alpha, 0)
-                    generated_frames.append(blended)
+                if target_size[0] <= 0 or target_size[1] <= 0:
+                    generated_frames[frame_idx_in_list] = original_frame
+                    continue
+
+                # 마지막 립싱크 입 영역을 현재 프레임 크기에 맞게 리사이즈
+                pred_frame_resized = cv2.resize(last_mouth_sharpened, target_size, interpolation=cv2.INTER_LINEAR)
+
+                # 립싱크 적용된 프레임 생성 (몸은 원본, 입은 마지막 립싱크)
+                if mask_cache is not None and crop_box_cache is not None:
+                    lipsync_frame = get_image_blending(
+                        original_frame.copy(),
+                        pred_frame_resized,
+                        [x1, y1, x2, y2],
+                        mask_cache,
+                        crop_box_cache
+                    )
                 else:
-                    generated_frames.append(original_frame)
+                    lipsync_frame = get_image(
+                        original_frame.copy(),
+                        pred_frame_resized,
+                        [x1, y1, x2, y2],
+                        mode="jaw",
+                        fp=face_parsing
+                    )
 
-            print(f"[프레임 패딩] 완료: 총 {len(generated_frames)}프레임")
+                if i < hold_frames:
+                    # 유지 구간: 몸은 움직이고, 입만 마지막 립싱크 상태 유지
+                    generated_frames[frame_idx_in_list] = lipsync_frame
+                else:
+                    # 페이드아웃 구간: 립싱크 입 → 원본 입으로 전환
+                    fadeout_idx = i - hold_frames
+                    alpha = (fadeout_idx + 1) / fadeout_frames  # 0 → 1
+
+                    # 립싱크 프레임과 원본을 블렌딩 (입 부분만 점차 원본으로)
+                    blended = cv2.addWeighted(lipsync_frame, 1 - alpha, original_frame, alpha, 0)
+                    generated_frames[frame_idx_in_list] = blended
+
+        # ========== 다음 완전한 애니메이션 사이클까지 패딩 (프레임 정렬) ==========
+        # 다음 영상과 프레임을 맞추기 위해 완전한 사이클까지 패딩
+        # 예: 7초 오디오 (175프레임) → 10초 (250프레임 = 2 × 125)
+        # - 아바타 영상(몸/배경)은 계속 플레이
+        # - 입 부분: 마지막 립싱크 → 원본 영상 입으로 자연스럽게 보간
+        avatar_total_frames = len(frames_list)  # new_talk_short = 125프레임 (5초)
+        lipsync_frames = len(generated_frames)
+
+        # 다음 완전한 사이클 계산 (최소 1사이클)
+        target_frames = math.ceil(lipsync_frames / avatar_total_frames) * avatar_total_frames
+        if target_frames == lipsync_frames:
+            # 정확히 사이클 끝인 경우, 이미 정렬되어 있음
+            target_frames = lipsync_frames
+
+        if lipsync_frames < target_frames:
+            padding_frames = target_frames - lipsync_frames
+
+            print(f"[프레임 패딩] 립싱크 {lipsync_frames}프레임 ({lipsync_frames/fps:.1f}초) → {target_frames}프레임 ({target_frames/fps:.1f}초) [사이클 정렬]")
+            print(f"  → 원본 영상 {padding_frames}프레임 ({padding_frames/fps:.2f}초) 추가")
+
+            # 패딩 프레임 생성 (원본 영상 그대로 사용 - 이미 페이드아웃됨)
+            for i in range(padding_frames):
+                frame_idx = (lipsync_frames + i) % len(frames_list)
+                original_frame = frames_list[frame_idx].copy()
+                generated_frames.append(original_frame)
+
+            cycles = len(generated_frames) // avatar_total_frames
+            print(f"[프레임 패딩] 완료: 총 {len(generated_frames)}프레임 ({len(generated_frames)/fps:.1f}초) = {cycles}사이클")
 
         # 진행률 전송
         emit_kwargs = {
@@ -939,6 +1095,28 @@ class LipsyncEngine:
         for frame in tqdm(generated_frames, desc="프레임 저장"):
             writer.write(frame)
         writer.release()
+
+        # ===== 최종 동기화 검증 =====
+        final_frame_count = len(generated_frames)
+        final_video_duration = final_frame_count / fps
+        if isinstance(audio_input, tuple):
+            audio_np, audio_sr = audio_input
+            final_audio_duration = len(audio_np) / audio_sr
+        else:
+            final_audio_duration = 0  # 파일인 경우
+        print(f"=" * 50)
+        print(f"[최종 동기화 검증]")
+        print(f"  비디오: {final_frame_count}프레임 @ {fps}fps = {final_video_duration:.3f}초")
+        print(f"  오디오: {final_audio_duration:.3f}초")
+        print(f"  차이: {(final_video_duration - final_audio_duration)*1000:.1f}ms")
+
+        # 비디오가 오디오보다 짧으면 tpad로 연장할 시간 계산
+        tpad_duration = 0.15  # 기본 150ms
+        if final_video_duration < final_audio_duration:
+            # 오디오보다 짧은 만큼 + 여유 200ms 추가
+            tpad_duration = (final_audio_duration - final_video_duration) + 0.2
+            print(f"  ⚠️ 비디오가 짧음 → tpad {tpad_duration:.2f}초로 연장")
+        print(f"=" * 50)
 
         # 오디오 합성
         print("오디오 합성 중...")
@@ -1007,15 +1185,14 @@ class LipsyncEngine:
                 '-i', temp_video,
                 '-i', audio_file_path,
             ]
-            # 비디오 필터: 스케일 + 크롭 + 마지막 프레임 150ms 연장
-            vf_parts = ['tpad=stop_mode=clone:stop_duration=0.15']
+            # 비디오 필터: 마지막 프레임 연장 (오디오 길이에 맞춤)
+            vf_parts = [f'tpad=stop_mode=clone:stop_duration={tpad_duration:.2f}']
             if scale_filter:
                 vf_parts.append(scale_filter)
             if crop_filter:
                 vf_parts.append(crop_filter)
             ffmpeg_cmd_av1.extend(['-vf', ','.join(vf_parts)])
-            # 오디오 필터: 앞에 120ms 무음 추가 (립싱크 동기화)
-            ffmpeg_cmd_av1.extend(['-af', 'adelay=120|120'])
+            # adelay 제거 - 원본 MuseTalk에는 오디오 지연 없음
             ffmpeg_cmd_av1.extend(metadata_args)
             ffmpeg_cmd_av1.extend([
                 '-c:v', 'av1_nvenc',     # AV1 NVENC (GPU 인코딩)
@@ -1023,7 +1200,6 @@ class LipsyncEngine:
                 '-cq', '30',              # 품질 수준
                 '-c:a', 'libopus',        # Opus 오디오
                 '-b:a', '128k',
-                '-shortest',  # 비디오/오디오 중 짧은 것에 맞춤
                 final_video
             ])
             av1_result = subprocess.run(ffmpeg_cmd_av1, capture_output=True)
@@ -1036,15 +1212,14 @@ class LipsyncEngine:
                     '-i', temp_video,
                     '-i', audio_file_path,
                 ]
-                # 비디오 필터: 스케일 + 크롭 + 마지막 프레임 150ms 연장
-                vf_parts = ['tpad=stop_mode=clone:stop_duration=0.15']
+                # 비디오 필터: 마지막 프레임 150ms 연장
+                vf_parts = [f'tpad=stop_mode=clone:stop_duration={tpad_duration:.2f}']
                 if scale_filter:
                     vf_parts.append(scale_filter)
                 if crop_filter:
                     vf_parts.append(crop_filter)
                 ffmpeg_cmd_vp9.extend(['-vf', ','.join(vf_parts)])
-                # 오디오 필터: 앞에 120ms 무음 추가 (립싱크 동기화)
-                ffmpeg_cmd_vp9.extend(['-af', 'adelay=120|120'])
+                # adelay 제거 - 원본 MuseTalk에는 오디오 지연 없음
                 ffmpeg_cmd_vp9.extend(metadata_args)
                 ffmpeg_cmd_vp9.extend([
                     '-c:v', 'libvpx-vp9',   # VP9 코덱
@@ -1054,7 +1229,6 @@ class LipsyncEngine:
                     '-row-mt', '1',          # 멀티스레드
                     '-c:a', 'libopus',
                     '-b:a', '128k',
-                    '-shortest',  # 비디오/오디오 중 짧은 것에 맞춤
                     final_video
                 ])
                 vp9_result = subprocess.run(ffmpeg_cmd_vp9, capture_output=True)
@@ -1073,16 +1247,14 @@ class LipsyncEngine:
                 '-i', audio_file_path,
             ]
 
-            # 비디오 필터: 스케일 + 크롭 + 마지막 프레임 150ms 연장
-            vf_parts = ['tpad=stop_mode=clone:stop_duration=0.15']
+            # 비디오 필터: 마지막 프레임 연장 (오디오 길이에 맞춤)
+            vf_parts = [f'tpad=stop_mode=clone:stop_duration={tpad_duration:.2f}']
             if scale_filter:
                 vf_parts.append(scale_filter)
             if crop_filter:
                 vf_parts.append(crop_filter)
             ffmpeg_cmd.extend(['-vf', ','.join(vf_parts)])
-
-            # 오디오 필터: 앞에 120ms 무음 추가 (립싱크 동기화)
-            ffmpeg_cmd.extend(['-af', 'adelay=120|120'])
+            # adelay 제거 - 원본 MuseTalk에는 오디오 지연 없음
 
             # 메타데이터 추가
             ffmpeg_cmd.extend(metadata_args)
@@ -1094,7 +1266,6 @@ class LipsyncEngine:
                 '-rc', 'vbr',          # 가변 비트레이트
                 '-cq', '28',           # 품질 수준 (낮을수록 고품질)
                 '-c:a', 'aac',
-                '-shortest',  # 비디오/오디오 중 짧은 것에 맞춤
                 final_video
             ])
 
@@ -1108,20 +1279,18 @@ class LipsyncEngine:
                     '-i', temp_video,
                     '-i', audio_file_path,
                 ]
-                # 비디오 필터: 스케일 + 마지막 프레임 150ms 연장
-                vf_parts = ['tpad=stop_mode=clone:stop_duration=0.15']
+                # 비디오 필터: 마지막 프레임 150ms 연장
+                vf_parts = [f'tpad=stop_mode=clone:stop_duration={tpad_duration:.2f}']
                 if scale_filter:
                     vf_parts.append(scale_filter)
                 ffmpeg_cmd_cpu.extend(['-vf', ','.join(vf_parts)])
-                # 오디오 필터: 앞에 120ms 무음 추가 (립싱크 동기화)
-                ffmpeg_cmd_cpu.extend(['-af', 'adelay=120|120'])
+                # adelay 제거 - 원본 MuseTalk에는 오디오 지연 없음
                 # 메타데이터 추가
                 ffmpeg_cmd_cpu.extend(metadata_args)
                 ffmpeg_cmd_cpu.extend([
                     '-c:v', 'libx264',
                     '-preset', 'ultrafast',  # 가장 빠른 CPU 프리셋
                     '-c:a', 'aac',
-                    '-shortest',  # 비디오/오디오 중 짧은 것에 맞춤
                     final_video
                 ])
                 subprocess.run(ffmpeg_cmd_cpu, capture_output=True)
@@ -1156,13 +1325,8 @@ class LipsyncEngine:
                 json.dump(metadata, f, ensure_ascii=False, indent=2)
             print(f"  JSON 메타데이터 저장: {json_path}")
 
-        # 표준 파일명으로 복사 (기존 코드 호환성)
-        standard_output = str(output_path / "output_with_audio.mp4")
-        if os.path.exists(final_video):
-            import shutil
-            shutil.copy2(final_video, standard_output)
-            print(f"표준 파일명으로 복사: {standard_output}")
-
+        # 고유 파일명 사용 (동시 요청 시 덮어쓰기 방지)
+        # 기존 standard_output 호환성 제거 - 각 요청마다 고유 파일명 반환
         elapsed = time.time() - start_time
         timings['total'] = elapsed
 
@@ -1177,12 +1341,12 @@ class LipsyncEngine:
         if crop_coords:
             print(f"    - 중앙 크롭: {crop_coords[2]}x{crop_coords[3]} (x={crop_coords[0]})")
         print(f"출력: {final_video}")
-        print(f"표준 출력: {standard_output}")
 
         # 반환값: (비디오 경로, 크롭 좌표) 또는 비디오 경로만 (하위 호환)
-        return (standard_output, crop_coords) if crop_coords else standard_output
+        # 고유 파일명(final_video) 반환으로 동시 요청 충돌 방지
+        return (final_video, crop_coords) if crop_coords else final_video
 
-    def generate_lipsync_streaming(self, precomputed_path, audio_input, sid, emit_callback, preloaded_data=None, frame_skip=1):
+    def generate_lipsync_streaming(self, precomputed_path, audio_input, sid, emit_callback, preloaded_data=None, frame_skip=1, resolution="720p"):
         """
         스트리밍 립싱크 생성 - 프레임 생성 즉시 WebSocket으로 전송
 
@@ -1193,6 +1357,7 @@ class LipsyncEngine:
             emit_callback: WebSocket emit 함수
             preloaded_data: 미리 로드된 프리컴퓨트 데이터
             frame_skip: 프레임 스킵 간격
+            resolution: 출력 해상도 ("720p", "480p", "360p")
         """
         import torch
         import base64
@@ -1278,6 +1443,13 @@ class LipsyncEngine:
 
         # 페이드 프레임 수
         fade_frames = min(8, num_frames // 4)
+
+        # 아바타 영상 길이 (new_talk_short=5초, new_talk_long=10초)
+        avatar_frames_count = len(frames_list)
+        print(f"[스트리밍 아바타 영상] {avatar_frames_count} 프레임 ({avatar_frames_count/fps:.1f}초)")
+
+        # idle 프레임 (첫 프레임) - 시작/끝 전환용
+        idle_frame = frames_list[0].copy()
 
         # 배치 단위로 처리하며 즉시 전송
         gen = datagen(
@@ -1367,6 +1539,7 @@ class LipsyncEngine:
 
             idx = i % len(coords_list)
             coord = coords_list[idx]
+            # talk 영상 프레임 사용 (new_talk_short 또는 new_talk_long)
             original_frame = frames_list[idx].copy()
             x1, y1, x2, y2 = [int(c) for c in coord]
 
@@ -1379,17 +1552,8 @@ class LipsyncEngine:
             except Exception:
                 continue
 
-            # 블렌딩
+            # 블렌딩 (원본 MuseTalk과 동일 - 페이드 없음)
             result_frame = get_image(original_frame, pred_frame_resized, [x1, y1, x2, y2], mode="jaw", fp=face_parsing)
-
-            # 페이드 처리
-            if i < fade_frames:
-                alpha = i / fade_frames
-                result_frame = cv2.addWeighted(original_frame, 1 - alpha, result_frame, alpha, 0)
-            elif i >= num_frames - fade_frames:
-                remaining = num_frames - i - 1
-                alpha = remaining / fade_frames
-                result_frame = cv2.addWeighted(original_frame, 1 - alpha, result_frame, alpha, 0)
 
             # JPEG 인코딩 및 Base64 변환
             _, buffer = cv2.imencode('.jpg', result_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -1561,6 +1725,55 @@ TTS_ENGINES = {
 DEFAULT_TTS_ENGINE = 'cosyvoice'
 DEFAULT_TTS_VOICE = 'default'
 
+# ========== Quality 프리셋 ==========
+# quality 파라미터로 frame_skip과 resolution을 한번에 설정
+QUALITY_PRESETS = {
+    'high': {'frame_skip': 1, 'resolution': '720p'},      # 최고품질: 모든 프레임 추론, 720p
+    'medium': {'frame_skip': 2, 'resolution': '480p'},    # 균형: 2프레임당 1추론, 480p
+    'low': {'frame_skip': 3, 'resolution': '360p'},       # 최고속: 3프레임당 1추론, 360p
+}
+DEFAULT_QUALITY = 'high'
+
+def parse_quality_params(data):
+    """
+    요청 데이터에서 quality 파라미터를 파싱하여 frame_skip과 resolution 반환
+
+    우선순위:
+    1. frame_skip/resolution이 명시적으로 지정된 경우 해당 값 사용
+    2. quality가 지정된 경우 프리셋 사용
+    3. 둘 다 없으면 기본값 (high)
+
+    Args:
+        data: 요청 데이터 (dict)
+
+    Returns:
+        (frame_skip, resolution) 튜플
+    """
+    # 명시적 값이 있으면 우선 사용
+    explicit_frame_skip = data.get('frame_skip')
+    explicit_resolution = data.get('resolution')
+
+    # quality 프리셋 확인
+    quality = data.get('quality', DEFAULT_QUALITY).lower()
+    if quality not in QUALITY_PRESETS:
+        quality = DEFAULT_QUALITY
+
+    preset = QUALITY_PRESETS[quality]
+
+    # 명시적 값 > 프리셋 값 > 기본값
+    frame_skip = explicit_frame_skip if explicit_frame_skip is not None else preset['frame_skip']
+    resolution = explicit_resolution if explicit_resolution is not None else preset['resolution']
+
+    # frame_skip 범위 제한 (1~3)
+    frame_skip = max(1, min(int(frame_skip), 3))
+
+    # resolution 유효성 검증
+    valid_resolutions = ['720p', '480p', '360p']
+    if resolution not in valid_resolutions:
+        resolution = '720p'
+
+    return frame_skip, resolution
+
 # API 설정
 ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY', '')
 COSYVOICE_API_URL = os.getenv('COSYVOICE_API_URL', 'http://172.16.10.200:5000')
@@ -1592,29 +1805,60 @@ tts_http_session = create_http_session()
 
 
 def get_available_avatars():
-    """사전 계산된 아바타 목록 조회"""
+    """사전 계산된 아바타 목록 조회 (해상도별 폴더 지원)"""
     precomputed_dir = Path("precomputed")
     if not precomputed_dir.exists():
         return []
 
     avatars = []
+    seen_names = set()
+
+    # 해상도별 폴더에서 검색 (720p, 480p, 360p)
+    for resolution in ['720p', '480p', '360p']:
+        res_dir = precomputed_dir / resolution
+        if res_dir.exists():
+            for pkl_file in res_dir.glob("*_precomputed.pkl"):
+                name = pkl_file.stem.replace("_precomputed", "")
+                base_name = name.replace(f"_{resolution}", "")
+
+                # 중복 방지 (같은 아바타의 다른 해상도)
+                if base_name in seen_names:
+                    continue
+                seen_names.add(base_name)
+
+                # 미리보기 이미지/비디오 찾기
+                preview = None
+                for ext in ['.mp4', '.png', '.jpg']:
+                    preview_path = Path("assets/images") / f"{base_name}{ext}"
+                    if preview_path.exists():
+                        preview = str(preview_path)
+                        break
+
+                avatars.append({
+                    "id": base_name,
+                    "name": base_name,
+                    "path": str(pkl_file),
+                    "preview": preview
+                })
+
+    # 루트 폴더에서도 검색 (하위 호환)
     for pkl_file in precomputed_dir.glob("*_precomputed.pkl"):
         name = pkl_file.stem.replace("_precomputed", "")
+        if name not in seen_names:
+            seen_names.add(name)
+            preview = None
+            for ext in ['.mp4', '.png', '.jpg']:
+                preview_path = Path("assets/images") / f"{name}{ext}"
+                if preview_path.exists():
+                    preview = str(preview_path)
+                    break
+            avatars.append({
+                "id": name,
+                "name": name,
+                "path": str(pkl_file),
+                "preview": preview
+            })
 
-        # 미리보기 이미지/비디오 찾기
-        preview = None
-        for ext in ['.mp4', '.png', '.jpg']:
-            preview_path = Path("assets/images") / f"{name}{ext}"
-            if preview_path.exists():
-                preview = str(preview_path)
-                break
-
-        avatars.append({
-            "id": name,
-            "name": name,
-            "path": str(pkl_file),
-            "preview": preview
-        })
     return avatars
 
 
@@ -1666,6 +1910,58 @@ def api_audios():
     return jsonify(audios)
 
 
+@app.route('/api/tts_engines')
+def api_tts_engines():
+    """TTS 엔진 목록 API"""
+    engines = []
+    for engine_id, engine_info in TTS_ENGINES.items():
+        # 엔진 가용성 확인
+        available = False
+        if engine_id == 'cosyvoice':
+            # CosyVoice 서버 연결 가능 여부 확인
+            try:
+                response = tts_http_session.get(COSYVOICE_API_URL, timeout=2)
+                # 서버가 응답하면 가용 (상태코드와 관계없이 연결 성공이면 OK)
+                available = True
+            except:
+                available = False
+        elif engine_id == 'elevenlabs':
+            # ElevenLabs API 키 존재 여부 확인
+            available = bool(ELEVENLABS_API_KEY)
+
+        engines.append({
+            'id': engine_id,
+            'name': engine_info['name'],
+            'voices': engine_info['voices'],
+            'default': engine_info.get('default', False),
+            'available': available
+        })
+    return jsonify(engines)
+
+
+@app.route('/api/check_cosyvoice')
+def api_check_cosyvoice():
+    """CosyVoice 서버 연결 상태 확인 API"""
+    result = {
+        'connected': False,
+        'url': COSYVOICE_API_URL,
+        'error': None
+    }
+
+    try:
+        response = tts_http_session.get(COSYVOICE_API_URL, timeout=3)
+        result['connected'] = True
+        result['status_code'] = response.status_code
+    except requests.exceptions.ConnectionError as e:
+        result['error'] = f'연결 거부됨 - 서버가 실행 중인지 확인하세요 ({COSYVOICE_API_URL})'
+    except requests.exceptions.Timeout:
+        result['error'] = f'연결 시간 초과 (3초) - 서버 응답 없음'
+    except Exception as e:
+        result['error'] = str(e)
+
+    return jsonify(result)
+
+
 @app.route('/api/queue_status')
 def api_queue_status():
     """큐 상태 확인 API (GPU 메모리 정보 포함)"""
@@ -1693,6 +1989,62 @@ def api_queue_status():
     return jsonify(status)
 
 
+@app.route('/api/availability')
+def api_availability():
+    """
+    서비스 가용성 체크 API
+    - 클라이언트가 이 서버를 사용할지, 다른 서비스로 이동할지 결정하는데 사용
+    """
+    status = generation_queue.get_status()
+    processing_count = status.get('processing_count', 0)
+    queue_length = status.get('queue_length', 0)
+    max_concurrent = status.get('max_concurrent', 3)
+
+    # 총 대기 수 (처리 중 + 대기열)
+    total_waiting = processing_count + queue_length
+
+    # 예상 대기 시간 (평균 처리 시간 약 20초 가정)
+    avg_process_time = 20  # seconds
+    estimated_wait_seconds = 0
+
+    if processing_count >= max_concurrent:
+        # 이미 최대 동시 처리 중 - 대기 필요
+        wait_position = queue_length + 1
+        estimated_wait_seconds = wait_position * avg_process_time
+    elif processing_count > 0:
+        # 처리 중이지만 여유 있음
+        estimated_wait_seconds = avg_process_time // 2
+
+    # 가용성 판단
+    # - available: 즉시 처리 가능
+    # - busy: 처리 가능하지만 대기 필요
+    # - overloaded: 대기열이 길어서 다른 서비스 권장
+    if processing_count < max_concurrent and queue_length == 0:
+        availability = 'available'
+        recommendation = 'use_this_server'
+    elif queue_length <= 2:
+        availability = 'busy'
+        recommendation = 'use_this_server'
+    else:
+        availability = 'overloaded'
+        recommendation = 'use_other_service'
+
+    return jsonify({
+        'available': availability == 'available',
+        'availability': availability,
+        'recommendation': recommendation,
+        'processing_count': processing_count,
+        'queue_length': queue_length,
+        'max_concurrent': max_concurrent,
+        'estimated_wait_seconds': estimated_wait_seconds,
+        'message': {
+            'available': '즉시 처리 가능',
+            'busy': f'대기 중 {queue_length}건, 약 {estimated_wait_seconds}초 대기',
+            'overloaded': f'서버 과부하, 다른 서비스 이용 권장 (대기 {queue_length}건)'
+        }.get(availability, '')
+    })
+
+
 @app.route('/api/queue_position/<sid>')
 def api_queue_position(sid):
     """특정 클라이언트의 대기 순서 확인"""
@@ -1702,6 +2054,95 @@ def api_queue_position(sid):
         'position': position,
         'status': 'processing' if position == 0 else ('queued' if position > 0 else 'not_in_queue')
     })
+
+
+@app.route('/api/system_status')
+def api_system_status():
+    """시스템 상태 모니터링 API (CPU, Memory, GPU, Processes)"""
+    result = {}
+
+    # CPU 정보
+    try:
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        cpu_per_core = psutil.cpu_percent(interval=0.1, percpu=True)
+        result['cpu'] = {
+            'percent': cpu_percent,
+            'per_core': cpu_per_core,
+            'count': psutil.cpu_count(),
+            'count_logical': psutil.cpu_count(logical=True)
+        }
+    except Exception as e:
+        result['cpu'] = {'error': str(e)}
+
+    # 메모리 정보
+    try:
+        mem = psutil.virtual_memory()
+        result['memory'] = {
+            'total': mem.total,
+            'available': mem.available,
+            'used': mem.used,
+            'percent': mem.percent
+        }
+    except Exception as e:
+        result['memory'] = {'error': str(e)}
+
+    # GPU 정보 (nvidia-smi)
+    try:
+        gpu_result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu,name', '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, timeout=5
+        )
+        if gpu_result.returncode == 0:
+            parts = gpu_result.stdout.strip().split(', ')
+            if len(parts) >= 5:
+                result['gpu'] = {
+                    'memory_total_mb': int(parts[0]),
+                    'memory_used_mb': int(parts[1]),
+                    'memory_free_mb': int(parts[2]),
+                    'utilization_percent': int(parts[3]),
+                    'temperature': int(parts[4]) if len(parts) > 4 else None,
+                    'name': parts[5] if len(parts) > 5 else 'Unknown'
+                }
+    except Exception as e:
+        result['gpu'] = {'error': str(e)}
+
+    # 큐 상태
+    try:
+        queue_status = generation_queue.get_status()
+        result['queue'] = queue_status
+    except Exception as e:
+        result['queue'] = {'error': str(e)}
+
+    # Top 프로세스 (CPU/Memory 기준)
+    try:
+        processes = []
+        for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent', 'memory_info']):
+            try:
+                pinfo = proc.info
+                mem_mb = pinfo['memory_info'].rss / (1024 * 1024) if pinfo['memory_info'] else 0
+                processes.append({
+                    'pid': pinfo['pid'],
+                    'name': pinfo['name'],
+                    'cpu_percent': pinfo['cpu_percent'] or 0,
+                    'memory_percent': pinfo['memory_percent'] or 0,
+                    'memory_mb': mem_mb
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        # CPU + Memory 기준으로 정렬하여 상위 15개
+        processes.sort(key=lambda x: x['cpu_percent'] + x['memory_percent'], reverse=True)
+        result['processes'] = processes[:15]
+    except Exception as e:
+        result['processes'] = []
+
+    return jsonify(result)
+
+
+@app.route('/dashboard')
+def dashboard():
+    """시스템 모니터링 대시보드"""
+    return render_template('dashboard.html')
 
 
 def load_precomputed_data(precomputed_path):
@@ -1745,37 +2186,136 @@ def get_elevenlabs_voice_id(voice_name):
     return voice_ids.get(voice_name, voice_ids['Custom'])
 
 
-def trim_audio_silence(audio_data, sample_rate=16000, threshold_db=-50, min_silence_duration=0.3):
+def trim_audio_leading_silence(audio_data, sample_rate=16000, threshold_db=-40, min_sound_duration=0.02):
     """
-    오디오 끝부분의 무음 트리밍 (보수적 설정)
-    
+    오디오 시작 부분의 무음 트리밍 (립싱크 동기화용)
+
     Args:
         audio_data: numpy 오디오 배열
         sample_rate: 샘플레이트
-        threshold_db: 무음 판정 임계값 (dB) - 더 낮을수록 보수적
-        min_silence_duration: 연속 무음이 이 시간 이상이어야 트리밍 (초)
-    
+        threshold_db: 소리 판정 임계값 (dB)
+        min_sound_duration: 소리가 이 시간 이상 지속되어야 시작점으로 인정 (초)
+
     Returns:
         트리밍된 오디오 배열
     """
     if len(audio_data) == 0:
         return audio_data
-    
+
     # dB를 진폭으로 변환
     threshold = 10 ** (threshold_db / 20)
-    
+
+    # 윈도우 설정
+    window_size = int(sample_rate * 0.01)  # 10ms 윈도우
+    min_sound_samples = int(min_sound_duration * sample_rate)
+
+    # 처음부터 검사하여 소리 시작점 찾기
+    consecutive_sound = 0
+    sound_start = 0
+
+    for i in range(0, len(audio_data) - window_size, window_size):
+        window = audio_data[i:i + window_size]
+        rms = np.sqrt(np.mean(window ** 2))
+
+        if rms >= threshold:
+            if consecutive_sound == 0:
+                sound_start = i
+            consecutive_sound += window_size
+
+            # 충분한 소리가 감지되면 여기서 자름
+            if consecutive_sound >= min_sound_samples:
+                if sound_start > 0:
+                    trim_duration = sound_start / sample_rate
+                    print(f"[오디오 트리밍] 시작부분 무음 {trim_duration:.3f}초 제거")
+                return audio_data[sound_start:]
+        else:
+            consecutive_sound = 0
+            sound_start = 0
+
+    # 트리밍하지 않고 원본 반환
+    return audio_data
+
+
+def trim_audio_leading_silence(audio_data, sample_rate=16000, threshold_db=-45, max_trim_ms=300):
+    """
+    오디오 앞부분의 무음 트리밍 (CosyVoice 립싱크 개선용)
+
+    Args:
+        audio_data: numpy 오디오 배열
+        sample_rate: 샘플레이트
+        threshold_db: 무음 판정 임계값 (dB)
+        max_trim_ms: 최대 트리밍 길이 (밀리초) - 너무 많이 자르지 않도록
+
+    Returns:
+        트리밍된 오디오 배열
+    """
+    if len(audio_data) == 0:
+        return audio_data
+
+    # dB를 진폭으로 변환
+    threshold = 10 ** (threshold_db / 20)
+
+    # 윈도우 설정
+    window_size = int(sample_rate * 0.01)  # 10ms 윈도우 (더 정밀하게)
+    max_trim_samples = int(max_trim_ms * sample_rate / 1000)
+
+    # 앞에서부터 검사하여 소리 시작점 찾기
+    sound_start = 0
+    for i in range(0, min(len(audio_data) - window_size, max_trim_samples), window_size):
+        window = audio_data[i:i + window_size]
+        rms = np.sqrt(np.mean(window ** 2))
+
+        if rms >= threshold:
+            # 소리 시작점 발견 (약간 앞으로 여유)
+            sound_start = max(0, i - int(sample_rate * 0.02))  # 20ms 앞으로
+            break
+        sound_start = i + window_size
+
+    if sound_start > 0:
+        trimmed = audio_data[sound_start:]
+        trim_ms = sound_start * 1000 / sample_rate
+        print(f"[오디오 트리밍] 앞부분 무음 {trim_ms:.0f}ms 제거")
+        return trimmed
+
+    return audio_data
+
+
+def trim_audio_silence(audio_data, sample_rate=16000, threshold_db=-50, min_silence_duration=0.3):
+    """
+    오디오 끝부분의 무음 트리밍 (보수적 설정)
+
+    참고: CosyVoice 서버에서 이미 노이즈 제거, 페이드아웃, 정규화를 수행하므로
+    여기서는 무음 구간만 트리밍합니다.
+
+    Args:
+        audio_data: numpy 오디오 배열
+        sample_rate: 샘플레이트
+        threshold_db: 무음 판정 임계값 (dB) - 더 낮을수록 보수적
+        min_silence_duration: 연속 무음이 이 시간 이상이어야 트리밍 (초)
+
+    Returns:
+        트리밍된 오디오 배열
+    """
+    if len(audio_data) == 0:
+        return audio_data
+
+    original_length = len(audio_data)
+
+    # dB를 진폭으로 변환
+    threshold = 10 ** (threshold_db / 20)
+
     # 윈도우 설정
     window_size = int(sample_rate * 0.05)  # 50ms 윈도우
     min_silence_samples = int(min_silence_duration * sample_rate)  # 최소 무음 지속 시간
-    
+
     # 끝에서부터 검사하여 연속 무음 구간 찾기
     silence_start = len(audio_data)
     consecutive_silence = 0
-    
+
     for i in range(len(audio_data) - window_size, 0, -window_size):
         window = audio_data[i:i + window_size]
         rms = np.sqrt(np.mean(window ** 2))
-        
+
         if rms < threshold:
             consecutive_silence += window_size
             silence_start = i
@@ -1784,17 +2324,15 @@ def trim_audio_silence(audio_data, sample_rate=16000, threshold_db=-50, min_sile
             if consecutive_silence >= min_silence_samples:
                 # 충분한 무음이 있었으면 여기서 자름 (200ms 여유)
                 end_idx = min(silence_start + int(sample_rate * 0.2), len(audio_data))
-                trimmed = audio_data[:end_idx]
-                if len(trimmed) < len(audio_data):
-                    trim_duration = (len(audio_data) - len(trimmed)) / sample_rate
-                    print(f"[오디오 트리밍] 끝부분 무음 {trim_duration:.2f}초 제거")
-                return trimmed
+                audio_data = audio_data[:end_idx]
+                trim_duration = (original_length - len(audio_data)) / sample_rate
+                print(f"[오디오 트리밍] 끝부분 무음 {trim_duration:.2f}초 제거")
+                break
             else:
                 # 무음이 충분하지 않으면 리셋
                 consecutive_silence = 0
                 silence_start = len(audio_data)
-    
-    # 트리밍하지 않고 원본 반환
+
     return audio_data
 
 
@@ -1941,50 +2479,73 @@ def generate_tts_audio_streaming(text, engine, voice, chunk_callback, output_pat
 
         start_time = time.time()
 
-        # 단일 청크 TTS 요청 함수 (세션 풀링 사용)
-        def fetch_tts_chunk(chunk_idx, text_chunk):
-            """단일 청크 TTS 요청 (병렬 처리용 - Keep-Alive 연결 재사용)"""
-            try:
-                # 전역 HTTP 세션 사용 (연결 재사용으로 오버헤드 감소)
-                response = tts_http_session.post(
-                    f"{COSYVOICE_API_URL}/api/tts/stream",
-                    json={"text": text_chunk, "speed": 1.0},
-                    stream=True,
-                    timeout=120
-                )
+        # 단일 청크 TTS 요청 함수 (재시도 로직 포함)
+        def fetch_tts_chunk(chunk_idx, text_chunk, max_retries=3):
+            """단일 청크 TTS 요청 (병렬 처리용 - 재시도 로직 포함)"""
+            # 텍스트 길이에 따른 예상 최소 오디오 길이 (한국어 기준 약 5자/초)
+            expected_min_duration = len(text_chunk) / 10.0  # 최소 예상 길이의 절반
 
-                if response.status_code == 200:
-                    # 큰 청크로 데이터 수집 (64KB - 네트워크 오버헤드 감소)
-                    wav_chunks = []
-                    for chunk in response.iter_content(chunk_size=65536):
-                        if chunk:
-                            wav_chunks.append(chunk)
-                    wav_data = b''.join(wav_chunks)
+            for attempt in range(max_retries):
+                try:
+                    # Non-streaming API 사용 (완전한 오디오 반환)
+                    response = tts_http_session.post(
+                        f"{COSYVOICE_API_URL}/api/tts",
+                        json={"text": text_chunk, "speed": 1.0},
+                        timeout=180
+                    )
 
-                    # numpy로 변환
-                    wav_buffer = io.BytesIO(wav_data)
-                    audio_data, sr = sf.read(wav_buffer)
+                    if response.status_code == 200:
+                        wav_data = response.content
 
-                    # 스테레오 → 모노
-                    if len(audio_data.shape) > 1:
-                        audio_data = audio_data.mean(axis=1)
+                        # WAV 데이터 크기 검증
+                        if len(wav_data) < 1000:
+                            print(f"[CosyVoice] 청크 {chunk_idx + 1} 재시도 {attempt + 1}/{max_retries}: 오디오 데이터 너무 작음 ({len(wav_data)} bytes)")
+                            time.sleep(0.5 * (attempt + 1))
+                            continue
 
-                    # 16kHz 리샘플링
-                    if sr != 16000:
-                        from scipy import signal
-                        target_len = int(len(audio_data) * 16000 / sr)
-                        audio_data = signal.resample(audio_data, target_len)
+                        # numpy로 변환
+                        wav_buffer = io.BytesIO(wav_data)
+                        audio_data, sr = sf.read(wav_buffer)
 
-                    return (chunk_idx, audio_data.astype(np.float32), None)
-                else:
-                    return (chunk_idx, None, f"HTTP {response.status_code}")
+                        # 스테레오 → 모노
+                        if len(audio_data.shape) > 1:
+                            audio_data = audio_data.mean(axis=1)
 
-            except Exception as e:
-                return (chunk_idx, None, str(e))
+                        # 오디오 길이 검증 (너무 짧으면 재시도)
+                        actual_duration = len(audio_data) / sr
+                        if actual_duration < expected_min_duration and attempt < max_retries - 1:
+                            print(f"[CosyVoice] 청크 {chunk_idx + 1} 재시도 {attempt + 1}/{max_retries}: 오디오 너무 짧음 ({actual_duration:.2f}초 < 예상 {expected_min_duration:.2f}초)")
+                            time.sleep(0.5 * (attempt + 1))
+                            continue
 
-        # 병렬 TTS 요청 (최대 3개 동시 요청 - 서버 부하 고려)
-        max_parallel = min(3, len(text_chunks))
+                        # 원본 샘플레이트 유지 (24kHz) - 리샘플링은 립싱크 엔진에서 처리
+                        return (chunk_idx, audio_data.astype(np.float32), sr, None)
+                    else:
+                        print(f"[CosyVoice] 청크 {chunk_idx + 1} HTTP 오류: {response.status_code}")
+                        if attempt < max_retries - 1:
+                            time.sleep(1.0 * (attempt + 1))
+                            continue
+                        return (chunk_idx, None, None, f"HTTP {response.status_code}")
+
+                except requests.exceptions.Timeout as e:
+                    print(f"[CosyVoice] 청크 {chunk_idx + 1} 타임아웃 (시도 {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        time.sleep(2.0 * (attempt + 1))
+                        continue
+                    return (chunk_idx, None, None, f"Timeout: {e}")
+                except Exception as e:
+                    print(f"[CosyVoice] 청크 {chunk_idx + 1} 오류 (시도 {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(1.0 * (attempt + 1))
+                        continue
+                    return (chunk_idx, None, None, str(e))
+
+            return (chunk_idx, None, None, "Max retries exceeded")
+
+        # 병렬 TTS 요청 (최대 2개 동시 요청 - 안정성 우선)
+        max_parallel = min(2, len(text_chunks))
         results = [None] * len(text_chunks)
+        sample_rates = [None] * len(text_chunks)
         failed = False
 
         print(f"[CosyVoice] {len(text_chunks)}개 청크 병렬 처리 시작 (max_parallel={max_parallel})")
@@ -1996,7 +2557,7 @@ def generate_tts_audio_streaming(text, engine, voice, chunk_callback, output_pat
             }
 
             for future in as_completed(futures):
-                chunk_idx, audio_data, error = future.result()
+                chunk_idx, audio_data, sr, error = future.result()
 
                 if error:
                     print(f"[CosyVoice] 청크 {chunk_idx + 1} 실패: {error}")
@@ -2004,13 +2565,17 @@ def generate_tts_audio_streaming(text, engine, voice, chunk_callback, output_pat
                     break
                 else:
                     results[chunk_idx] = audio_data
-                    print(f"[CosyVoice] 청크 {chunk_idx + 1}/{len(text_chunks)} 완료 (길이: {len(audio_data)/16000:.2f}초)")
+                    sample_rates[chunk_idx] = sr
+                    print(f"[CosyVoice] 청크 {chunk_idx + 1}/{len(text_chunks)} 완료 (길이: {len(audio_data)/sr:.2f}초, {sr}Hz)")
 
         if failed:
             print("[TTS] ElevenLabs로 폴백합니다...")
             return generate_tts_audio_streaming(text, 'elevenlabs', 'Custom', chunk_callback, output_path)
 
-        # 순서대로 클라이언트에 전송 (순차적으로 스트리밍)
+        # 원본 샘플레이트 확인 (첫 번째 청크 기준)
+        original_sr = sample_rates[0] if sample_rates[0] else 24000
+
+        # 순서대로 클라이언트에 전송 (원본 샘플레이트로 고음질 스트리밍)
         for chunk_idx, audio_numpy in enumerate(results):
             if audio_numpy is None:
                 continue
@@ -2018,38 +2583,37 @@ def generate_tts_audio_streaming(text, engine, voice, chunk_callback, output_pat
             is_last_chunk = (chunk_idx == len(results) - 1)
             all_audio_chunks.append(audio_numpy)
 
-            # 클라이언트로 전송
+            # 클라이언트로 원본 샘플레이트로 전송 (24kHz 고음질)
             chunk_wav_buffer = io.BytesIO()
-            sf.write(chunk_wav_buffer, audio_numpy, 16000)
+            sf.write(chunk_wav_buffer, audio_numpy, original_sr, format='WAV')
             chunk_wav_buffer.seek(0)
             chunk_base64 = base64.b64encode(chunk_wav_buffer.read()).decode('utf-8')
-            chunk_callback(chunk_base64, 16000, is_last_chunk)
+            chunk_callback(chunk_base64, original_sr, is_last_chunk)
 
         # 모든 청크를 합쳐서 최종 오디오 생성
         if all_audio_chunks:
             final_audio = np.concatenate(all_audio_chunks)
-            final_sample_rate = 16000
-            
-            # 끝부분 무음/불필요한 소리 트리밍
-            final_audio = trim_audio_silence(final_audio, final_sample_rate)
 
-            # 최종 완료 신호
-            chunk_callback("", final_sample_rate, True)
+            # 끝부분 무음/불필요한 소리 트리밍 (원본 샘플레이트로)
+            final_audio = trim_audio_silence(final_audio, original_sr)
+
+            # 최종 완료 신호 (클라이언트에는 원본 샘플레이트 전달)
+            chunk_callback("", original_sr, True)
 
             if output_path:
-                sf.write(str(output_path), final_audio, final_sample_rate)
+                sf.write(str(output_path), final_audio, original_sr)
 
-            # 캐시에 저장 (LRU 방식)
+            # 캐시에 저장 (원본 샘플레이트로 저장 - audio_processor에서 리샘플링 처리)
             if len(tts_audio_cache) >= TTS_CACHE_MAX_SIZE:
-                # 가장 오래된 항목 삭제
                 oldest_key = min(tts_audio_cache.keys(), key=lambda k: tts_audio_cache[k][2])
                 del tts_audio_cache[oldest_key]
-            tts_audio_cache[cache_key] = (final_audio.copy(), final_sample_rate, time.time())
+            tts_audio_cache[cache_key] = (final_audio.copy(), original_sr, time.time())
             print(f"[TTS] 캐시 저장 (key={cache_key[:8]}..., 현재 캐시 크기={len(tts_audio_cache)})")
 
             elapsed = time.time() - start_time
-            print(f"[CosyVoice] 전체 TTS 완료 (총 {len(text_chunks)}개 청크, 병렬 처리, 시간: {elapsed:.2f}초, 길이: {len(final_audio)/final_sample_rate:.2f}초)")
-            return (final_audio, final_sample_rate)
+            print(f"[CosyVoice] 전체 TTS 완료 (총 {len(text_chunks)}개 청크, 병렬 처리, 시간: {elapsed:.2f}초, 길이: {len(final_audio)/original_sr:.2f}초)")
+            # 원본 샘플레이트로 반환 (audio_processor에서 16kHz로 리샘플링됨)
+            return (final_audio, original_sr)
 
         return None
 
@@ -2057,6 +2621,7 @@ def generate_tts_audio_streaming(text, engine, voice, chunk_callback, output_pat
         # ElevenLabs TTS (병렬 처리 최적화 + Keep-Alive 연결 재사용)
         from pydub import AudioSegment
         import base64
+        import librosa
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         voice_id = get_elevenlabs_voice_id(voice)
@@ -2094,24 +2659,26 @@ def generate_tts_audio_streaming(text, engine, voice, chunk_callback, output_pat
                             mp3_chunks.append(chunk)
                     mp3_data = b''.join(mp3_chunks)
 
-                    # numpy로 변환
+                    # numpy로 변환 (원본 샘플레이트 유지)
                     mp3_bytes = io.BytesIO(mp3_data)
                     audio_segment = AudioSegment.from_mp3(mp3_bytes)
-                    audio_segment = audio_segment.set_frame_rate(16000).set_channels(1)
+                    original_sr = audio_segment.frame_rate
+                    audio_segment = audio_segment.set_channels(1)  # 모노로만 변환
 
                     audio_numpy = np.array(audio_segment.get_array_of_samples(), dtype=np.float32)
                     audio_numpy = audio_numpy / 32768.0
 
-                    return (chunk_idx, audio_numpy, None)
+                    return (chunk_idx, audio_numpy, original_sr, None)
                 else:
-                    return (chunk_idx, None, f"HTTP {response.status_code}")
+                    return (chunk_idx, None, None, f"HTTP {response.status_code}")
 
             except Exception as e:
-                return (chunk_idx, None, str(e))
+                return (chunk_idx, None, None, str(e))
 
         # 병렬 TTS 요청 (최대 3개 동시 - API rate limit 고려)
         max_parallel = min(3, len(text_chunks))
         results = [None] * len(text_chunks)
+        sample_rates = [None] * len(text_chunks)
         failed = False
 
         print(f"[ElevenLabs] {len(text_chunks)}개 청크 병렬 처리 시작 (max_parallel={max_parallel})")
@@ -2123,7 +2690,7 @@ def generate_tts_audio_streaming(text, engine, voice, chunk_callback, output_pat
             }
 
             for future in as_completed(futures):
-                chunk_idx, audio_data, error = future.result()
+                chunk_idx, audio_data, sr, error = future.result()
 
                 if error:
                     print(f"[ElevenLabs] 청크 {chunk_idx + 1} 실패: {error}")
@@ -2131,12 +2698,16 @@ def generate_tts_audio_streaming(text, engine, voice, chunk_callback, output_pat
                     break
                 else:
                     results[chunk_idx] = audio_data
-                    print(f"[ElevenLabs] 청크 {chunk_idx + 1}/{len(text_chunks)} 완료 (길이: {len(audio_data)/16000:.2f}초)")
+                    sample_rates[chunk_idx] = sr
+                    print(f"[ElevenLabs] 청크 {chunk_idx + 1}/{len(text_chunks)} 완료 (길이: {len(audio_data)/sr:.2f}초, {sr}Hz)")
 
         if failed:
             return None
 
-        # 순서대로 클라이언트에 전송
+        # 원본 샘플레이트 확인 (첫 번째 청크 기준)
+        original_sr = sample_rates[0] if sample_rates[0] else 44100
+
+        # 순서대로 클라이언트에 전송 (원본 샘플레이트로 고음질 스트리밍)
         for chunk_idx, audio_numpy in enumerate(results):
             if audio_numpy is None:
                 continue
@@ -2144,41 +2715,41 @@ def generate_tts_audio_streaming(text, engine, voice, chunk_callback, output_pat
             is_last_chunk = (chunk_idx == len(results) - 1)
             all_audio_chunks.append(audio_numpy)
 
-            # MP3로 변환하여 전송 (ElevenLabs 호환)
+            # MP3로 변환하여 전송 (원본 샘플레이트 유지)
             audio_segment = AudioSegment(
                 (audio_numpy * 32768).astype(np.int16).tobytes(),
-                frame_rate=16000, sample_width=2, channels=1
+                frame_rate=original_sr, sample_width=2, channels=1
             )
             mp3_buffer = io.BytesIO()
             audio_segment.export(mp3_buffer, format="mp3")
             mp3_buffer.seek(0)
             chunk_base64 = base64.b64encode(mp3_buffer.read()).decode('utf-8')
-            chunk_callback(chunk_base64, 16000, is_last_chunk)
+            chunk_callback(chunk_base64, original_sr, is_last_chunk)
 
         # 모든 청크를 합쳐서 최종 오디오 생성
         if all_audio_chunks:
             final_audio = np.concatenate(all_audio_chunks)
-            final_sample_rate = 16000
-            
-            # 끝부분 무음/불필요한 소리 트리밍
-            final_audio = trim_audio_silence(final_audio, final_sample_rate)
 
-            # 최종 완료 신호
-            chunk_callback("", final_sample_rate, True)
+            # 끝부분 무음/불필요한 소리 트리밍 (원본 샘플레이트로)
+            final_audio = trim_audio_silence(final_audio, original_sr)
+
+            # 최종 완료 신호 (클라이언트에는 원본 샘플레이트 전달)
+            chunk_callback("", original_sr, True)
 
             if output_path:
-                sf.write(str(output_path), final_audio, final_sample_rate)
+                sf.write(str(output_path), final_audio, original_sr)
 
-            # 캐시에 저장 (LRU 방식)
+            # 캐시에 저장 (원본 샘플레이트로 저장 - audio_processor에서 리샘플링 처리)
             if len(tts_audio_cache) >= TTS_CACHE_MAX_SIZE:
                 oldest_key = min(tts_audio_cache.keys(), key=lambda k: tts_audio_cache[k][2])
                 del tts_audio_cache[oldest_key]
-            tts_audio_cache[cache_key] = (final_audio.copy(), final_sample_rate, time.time())
+            tts_audio_cache[cache_key] = (final_audio.copy(), original_sr, time.time())
             print(f"[TTS] 캐시 저장 (key={cache_key[:8]}..., 현재 캐시 크기={len(tts_audio_cache)})")
 
             elapsed = time.time() - start_time
-            print(f"[ElevenLabs] 전체 TTS 완료 (총 {len(text_chunks)}개 청크, 병렬 처리, 시간: {elapsed:.2f}초, 길이: {len(final_audio)/final_sample_rate:.2f}초)")
-            return (final_audio, final_sample_rate)
+            print(f"[ElevenLabs] 전체 TTS 완료 (총 {len(text_chunks)}개 청크, 병렬 처리, 시간: {elapsed:.2f}초, 길이: {len(final_audio)/original_sr:.2f}초)")
+            # 원본 샘플레이트로 반환 (audio_processor에서 16kHz로 리샘플링됨)
+            return (final_audio, original_sr)
 
         return None
 
@@ -2200,89 +2771,116 @@ def generate_tts_audio(text, engine, voice, output_path=None):
     print(f"[TTS] engine={engine}, voice={voice}, text={text[:50]}...")
 
     if engine == 'cosyvoice':
-        # CosyVoice TTS (로컬 서버 스트리밍)
+        # CosyVoice TTS (로컬 서버 - 재시도 로직 포함)
         import requests
         import io
         import soundfile as sf
         import librosa
 
-        start_time = time.time()
+        # 텍스트 길이에 따른 예상 최소 오디오 길이 (한국어 기준 약 5자/초)
+        expected_min_duration = len(text) / 10.0
+        max_retries = 3
 
-        try:
-            # 스트리밍 TTS 요청
-            response = requests.post(
-                f"{COSYVOICE_API_URL}/api/tts/stream",
-                json={"text": text, "speed": 1.0},
-                stream=True,
-                timeout=120
-            )
+        for attempt in range(max_retries):
+            start_time = time.time()
 
-            if response.status_code == 200:
-                # 스트리밍 데이터 수집
-                wav_data = b''
-                for chunk in response.iter_content(chunk_size=4096):
-                    if chunk:
-                        wav_data += chunk
+            try:
+                # Non-streaming TTS 요청 (완전한 오디오 반환)
+                response = requests.post(
+                    f"{COSYVOICE_API_URL}/api/tts",
+                    json={"text": text, "speed": 1.0},
+                    timeout=180
+                )
 
-                elapsed = time.time() - start_time
-                print(f"[CosyVoice] 스트리밍 완료 (시간: {elapsed:.2f}초, 크기: {len(wav_data)} bytes)")
+                if response.status_code == 200:
+                    wav_data = response.content
 
-                # WAV 데이터를 numpy로 변환
-                wav_buffer = io.BytesIO(wav_data)
-                audio_data, sr = sf.read(wav_buffer)
+                    elapsed = time.time() - start_time
+                    print(f"[CosyVoice] TTS 완료 (시간: {elapsed:.2f}초, 크기: {len(wav_data)} bytes)")
 
-                # 스테레오인 경우 모노로 변환
-                if len(audio_data.shape) > 1:
-                    audio_data = audio_data.mean(axis=1)
+                    # WAV 데이터 크기 검증
+                    if len(wav_data) < 1000:
+                        print(f"[CosyVoice] 재시도 {attempt + 1}/{max_retries}: 오디오 데이터 너무 작음 ({len(wav_data)} bytes)")
+                        time.sleep(0.5 * (attempt + 1))
+                        continue
 
-                # 16kHz로 리샘플링 (CosyVoice는 24kHz 출력) - scipy가 더 빠름
-                original_duration = len(audio_data) / sr
-                print(f"[CosyVoice] 원본 오디오: {original_duration:.2f}초 ({sr}Hz, {len(audio_data)} samples)")
+                    # WAV 데이터를 numpy로 변환
+                    wav_buffer = io.BytesIO(wav_data)
+                    audio_data, sr = sf.read(wav_buffer)
 
-                if sr != 16000:
-                    from scipy import signal
-                    target_len = int(len(audio_data) * 16000 / sr)
-                    audio_data = signal.resample(audio_data, target_len)
-                    sr = 16000
-                    print(f"[CosyVoice] 리샘플링 후: {len(audio_data)/16000:.2f}초 (16kHz, {len(audio_data)} samples)")
+                    # 스테레오인 경우 모노로 변환
+                    if len(audio_data.shape) > 1:
+                        audio_data = audio_data.mean(axis=1)
 
-                audio_numpy = audio_data.astype(np.float32)
+                    # 원본 샘플레이트 유지 (24kHz 고음질) - 리샘플링은 립싱크 엔진에서 처리
+                    original_duration = len(audio_data) / sr
+                    print(f"[CosyVoice] 원본 오디오: {original_duration:.2f}초 ({sr}Hz, {len(audio_data)} samples)")
 
-                # 끝부분 무음/불필요한 소리 트리밍
-                before_trim = len(audio_numpy)
-                audio_numpy = trim_audio_silence(audio_numpy, 16000)
-                after_trim = len(audio_numpy)
-                if before_trim != after_trim:
-                    print(f"[CosyVoice] 트리밍: {before_trim/16000:.2f}초 → {after_trim/16000:.2f}초")
+                    # 오디오 길이 검증 (너무 짧으면 재시도)
+                    if original_duration < expected_min_duration and attempt < max_retries - 1:
+                        print(f"[CosyVoice] 재시도 {attempt + 1}/{max_retries}: 오디오 너무 짧음 ({original_duration:.2f}초 < 예상 {expected_min_duration:.2f}초)")
+                        time.sleep(0.5 * (attempt + 1))
+                        continue
 
-                if output_path:
-                    sf.write(str(output_path), audio_numpy, 16000)
+                    audio_numpy = audio_data.astype(np.float32)
 
-                print(f"[CosyVoice] TTS 최종 완료 (길이: {len(audio_numpy)/16000:.2f}초)")
-                return (audio_numpy, 16000)
+                    # 끝부분 무음/불필요한 소리 트리밍
+                    before_trim = len(audio_numpy)
+                    audio_numpy = trim_audio_silence(audio_numpy, sr)
+                    after_trim = len(audio_numpy)
+                    if before_trim != after_trim:
+                        print(f"[CosyVoice] 트리밍: {before_trim/sr:.2f}초 → {after_trim/sr:.2f}초")
 
-            else:
-                print(f"[CosyVoice] 오류: {response.status_code} - {response.text}")
-                # ElevenLabs로 폴백
+                    if output_path:
+                        sf.write(str(output_path), audio_numpy, sr)
+
+                    print(f"[CosyVoice] TTS 최종 완료 (길이: {len(audio_numpy)/sr:.2f}초, {sr}Hz)")
+                    # 원본 샘플레이트로 반환 (audio_processor에서 16kHz로 리샘플링됨)
+                    return (audio_numpy, sr)
+
+                else:
+                    print(f"[CosyVoice] HTTP 오류: {response.status_code} - {response.text}")
+                    if attempt < max_retries - 1:
+                        time.sleep(1.0 * (attempt + 1))
+                        continue
+                    # 최종 실패 시 ElevenLabs로 폴백
+                    print("[TTS] ElevenLabs로 폴백합니다...")
+                    return generate_tts_audio(text, 'elevenlabs', 'Custom', output_path)
+
+            except requests.exceptions.Timeout as e:
+                print(f"[CosyVoice] 타임아웃 (시도 {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    time.sleep(2.0 * (attempt + 1))
+                    continue
+                print("[TTS] ElevenLabs로 폴백합니다...")
+                return generate_tts_audio(text, 'elevenlabs', 'Custom', output_path)
+            except requests.exceptions.ConnectionError as e:
+                print(f"[CosyVoice] 서버 연결 실패 (시도 {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(2.0 * (attempt + 1))
+                    continue
+                print("[TTS] ElevenLabs로 폴백합니다...")
+                return generate_tts_audio(text, 'elevenlabs', 'Custom', output_path)
+            except Exception as e:
+                print(f"[CosyVoice] 오류 (시도 {attempt + 1}/{max_retries}): {e}")
+                import traceback
+                traceback.print_exc()
+                if attempt < max_retries - 1:
+                    time.sleep(1.0 * (attempt + 1))
+                    continue
                 print("[TTS] ElevenLabs로 폴백합니다...")
                 return generate_tts_audio(text, 'elevenlabs', 'Custom', output_path)
 
-        except requests.exceptions.ConnectionError as e:
-            print(f"[CosyVoice] 서버 연결 실패: {e}")
-            print("[TTS] ElevenLabs로 폴백합니다...")
-            return generate_tts_audio(text, 'elevenlabs', 'Custom', output_path)
-        except Exception as e:
-            print(f"[CosyVoice] 오류: {e}")
-            import traceback
-            traceback.print_exc()
-            print("[TTS] ElevenLabs로 폴백합니다...")
-            return generate_tts_audio(text, 'elevenlabs', 'Custom', output_path)
+        # 모든 재시도 실패 시 ElevenLabs로 폴백
+        print("[CosyVoice] 모든 재시도 실패, ElevenLabs로 폴백합니다...")
+        return generate_tts_audio(text, 'elevenlabs', 'Custom', output_path)
 
     elif engine == 'elevenlabs':
         # ElevenLabs TTS (스트리밍 + Flash v2.5 저지연 모델)
         import requests
         import io
         import soundfile as sf
+        import librosa
         from pydub import AudioSegment
 
         voice_id = get_elevenlabs_voice_id(voice)
@@ -2319,27 +2917,28 @@ def generate_tts_audio(text, engine, voice, output_path=None):
             elapsed = time.time() - start_time
             print(f"ElevenLabs 스트리밍 완료 (시간: {elapsed:.2f}초, 크기: {len(mp3_data)} bytes)")
 
-            # MP3를 메모리에서 디코딩
+            # MP3를 메모리에서 디코딩 (원본 샘플레이트 유지)
             mp3_bytes = io.BytesIO(mp3_data)
             audio_segment = AudioSegment.from_mp3(mp3_bytes)
-
-            # 16kHz로 리샘플링
-            audio_segment = audio_segment.set_frame_rate(16000)
-            audio_segment = audio_segment.set_channels(1)  # mono
+            original_sr = audio_segment.frame_rate
+            audio_segment = audio_segment.set_channels(1)  # mono로만 변환
 
             # numpy array로 변환
             audio_numpy = np.array(audio_segment.get_array_of_samples(), dtype=np.float32)
             audio_numpy = audio_numpy / 32768.0  # int16 -> float32
-            
+
+            print(f"[ElevenLabs] 원본 오디오: {len(audio_numpy)/original_sr:.2f}초 ({original_sr}Hz)")
+
             # 끝부분 무음/불필요한 소리 트리밍
-            audio_numpy = trim_audio_silence(audio_numpy, 16000)
+            audio_numpy = trim_audio_silence(audio_numpy, original_sr)
 
             # output_path가 제공되면 저장 (호환성)
             if output_path:
-                sf.write(str(output_path), audio_numpy, 16000)
+                sf.write(str(output_path), audio_numpy, original_sr)
 
-            print(f"ElevenLabs TTS 완료 (길이: {len(audio_numpy)/16000:.2f}초)")
-            return (audio_numpy, 16000)
+            print(f"[ElevenLabs] TTS 완료 (길이: {len(audio_numpy)/original_sr:.2f}초, {original_sr}Hz)")
+            # 원본 샘플레이트로 반환 (audio_processor에서 16kHz로 리샘플링됨)
+            return (audio_numpy, original_sr)
 
         print(f"ElevenLabs 오류: {response.status_code} - {response.text}")
         return None
@@ -2359,8 +2958,7 @@ def api_generate():
     tts_engine = data.get('tts_engine', DEFAULT_TTS_ENGINE)
     tts_voice = data.get('tts_voice', DEFAULT_TTS_VOICE)
     client_sid = data.get('sid')  # 클라이언트 SID
-    frame_skip = data.get('frame_skip', 1)  # 프레임 스킵 (1=없음, 2=절반추론, 3=1/3추론)
-    resolution = data.get('resolution', '720p')  # 출력 해상도 (720p, 480p, 360p)
+    frame_skip, resolution = parse_quality_params(data)  # quality 또는 frame_skip/resolution
 
     if not avatar_path:
         return jsonify({"error": "avatar_path가 필요합니다"}), 400
@@ -2424,17 +3022,17 @@ def api_record():
     avatar_path = data.get('avatar_path')
     tts_engine = data.get('tts_engine', DEFAULT_TTS_ENGINE)
     tts_voice = data.get('tts_voice', DEFAULT_TTS_VOICE)
-    resolution = data.get('resolution', '720p')  # 기본 루프 영상과 동일한 해상도
+    frame_skip, resolution = parse_quality_params(data)  # quality 또는 frame_skip/resolution
     filename = data.get('filename')  # 선택적 파일명
     output_format = data.get('output_format', 'mp4')  # 출력 포맷 (mp4/webm)
-    frame_skip = data.get('frame_skip', 1)  # 프레임 스킵 (1=고품질, 2=빠름, 3=최고속)
     client_sid = data.get('sid')
 
     if not text:
         return jsonify({"success": False, "error": "텍스트가 필요합니다"}), 400
 
+    # avatar_path가 없거나 'auto'면 자동 선택
     if not avatar_path:
-        return jsonify({"success": False, "error": "아바타가 필요합니다"}), 400
+        avatar_path = 'auto'
 
     if not client_sid:
         return jsonify({"success": False, "error": "sid가 필요합니다"}), 400
@@ -2608,58 +3206,38 @@ def select_avatar_by_audio_duration(audio_duration, avatar_path=None, frame_skip
     - 단일 아바타: 문자열 (경로)
     - 영상 조합: 리스트 [경로1, 경로2, ...]
     """
-    # 해상도별 프리컴퓨트 경로 (talk_short, talk_long 사용)
-    SHORT_AVATAR = _get_resolution_avatar("talk_short", resolution)
-    LONG_AVATAR = _get_resolution_avatar("talk_long", resolution)
+    # 해상도별 프리컴퓨트 경로 (new_talk_short만 사용, 필요시 반복)
+    SHORT_AVATAR = _get_resolution_avatar("new_talk_short", resolution)
     SHORT_DURATION = 5.0  # short 영상 길이
-    LONG_DURATION = 10.0  # long 영상 길이
-    AUDIO_DURATION_THRESHOLD = 5.0  # 5초 기준
 
-    # 명시적으로 아바타가 지정된 경우 그대로 사용
-    if avatar_path and avatar_path != 'auto' and os.path.exists(avatar_path):
-        return avatar_path
+    # 명시적으로 아바타가 지정된 경우 - 해상도에 맞게 변환
+    if avatar_path and avatar_path != 'auto':
+        # 경로에서 base_name 추출하여 해상도에 맞는 경로로 변환
+        import re
+        path_match = re.search(r'([^/\\]+?)(?:_\d+p)?_precomputed\.pkl$', avatar_path)
+        if path_match:
+            base_name = path_match.group(1)
+            # 해상도별 경로로 변환
+            resolved_path = _get_resolution_avatar(base_name, resolution)
+            if os.path.exists(resolved_path):
+                print(f"[아바타 해상도 변환] {avatar_path} → {resolved_path}")
+                return resolved_path
+        # 변환 실패시 원본 경로 시도
+        if os.path.exists(avatar_path):
+            return avatar_path
 
-    # 10초 이하: 기존 로직
-    if audio_duration <= LONG_DURATION:
-        if audio_duration <= AUDIO_DURATION_THRESHOLD:
-            selected = SHORT_AVATAR
-            print(f"[아바타 자동 선택] 짧은 오디오 ({audio_duration:.2f}초 ≤ 5초) → talk_short (5초)")
-        else:
-            selected = LONG_AVATAR
-            print(f"[아바타 자동 선택] 중간 오디오 ({audio_duration:.2f}초) → talk_long (10초)")
+    # 항상 new_talk_short 사용 (필요시 자동 반복)
+    loop_count = max(1, int(audio_duration / SHORT_DURATION) + 1)
+    print(f"[아바타 자동 선택] new_talk_short (5초) × {loop_count}회 반복 (오디오: {audio_duration:.2f}초)")
 
-        if not os.path.exists(selected):
-            return _get_fallback_avatar(avatar_path, LONG_AVATAR, SHORT_AVATAR)
-        return selected
+    if not os.path.exists(SHORT_AVATAR):
+        # 폴백: 기본 경로
+        fallback = "precomputed/new_talk_short_precomputed.pkl"
+        if os.path.exists(fallback):
+            return fallback
+        print(f"  ⚠️ new_talk_short 파일 없음: {SHORT_AVATAR}")
 
-    # 10초 초과: 모드별 전략
-    is_fast_mode = (frame_skip == 3)
-
-    if is_fast_mode:
-        # Fast 모드: long 영상 1개만 사용, 페이드 전환으로 처리
-        print(f"[아바타 자동 선택] Fast 모드 - 긴 오디오 ({audio_duration:.2f}초 > 10초) → talk_long (10초) + 페이드 전환")
-        selected = LONG_AVATAR
-        if not os.path.exists(selected):
-            return _get_fallback_avatar(avatar_path, LONG_AVATAR, SHORT_AVATAR)
-        return selected
-    else:
-        # Balanced/Quality 모드: 영상 조합 사용
-        mode_name = "Quality" if frame_skip == 1 else "Balanced"
-        avatar_combo = _calculate_avatar_combination(audio_duration, SHORT_AVATAR, LONG_AVATAR, SHORT_DURATION, LONG_DURATION)
-
-        # 조합 설명 생성
-        combo_desc = []
-        long_count = avatar_combo.count(LONG_AVATAR)
-        short_count = avatar_combo.count(SHORT_AVATAR)
-        if long_count > 0:
-            combo_desc.append(f"long×{long_count}")
-        if short_count > 0:
-            combo_desc.append(f"short×{short_count}")
-
-        total_duration = long_count * LONG_DURATION + short_count * SHORT_DURATION
-        print(f"[아바타 자동 선택] {mode_name} 모드 - 긴 오디오 ({audio_duration:.2f}초) → {' + '.join(combo_desc)} ({total_duration}초)")
-
-        return avatar_combo
+    return SHORT_AVATAR
 
 
 def _get_resolution_avatar(base_name, resolution="720p"):
@@ -2682,6 +3260,66 @@ def _get_resolution_avatar(base_name, resolution="720p"):
 
     # 둘 다 없으면 해상도별 경로 반환 (나중에 생성될 수 있음)
     return res_path
+
+
+# idle 영상 프레임 캐시 (메모리 최적화)
+_idle_frames_cache = {}
+
+def load_idle_video_frames(resolution="720p", use_short=False):
+    """
+    idle 영상에서 프레임 로드 (눈동자 움직임용)
+
+    Args:
+        resolution: 해상도 ("720p", "480p", "360p")
+        use_short: True면 idle_short (5초), False면 idle_long (10초) 사용
+
+    Returns:
+        list: 프레임 리스트 (numpy arrays)
+    """
+    global _idle_frames_cache
+
+    idle_type = "idle_short" if use_short else "idle_long"
+    cache_key = f"{resolution}_{idle_type}"
+
+    if cache_key in _idle_frames_cache:
+        return _idle_frames_cache[cache_key]
+
+    # 아바타 영상 길이에 맞는 idle 영상 선택 (5초 또는 10초)
+    idle_video_path = f"assets/{resolution}/{idle_type}.mp4"
+    if not os.path.exists(idle_video_path):
+        # 기본 경로로 폴백
+        idle_video_path = f"assets/{idle_type}.mp4"
+        if not os.path.exists(idle_video_path):
+            print(f"[경고] idle 영상을 찾을 수 없습니다: {idle_video_path}")
+            return None
+
+    print(f"[idle 영상 로드] {idle_video_path} ({'5초' if use_short else '10초'})")
+
+    frames = []
+    cap = cv2.VideoCapture(idle_video_path)
+
+    if not cap.isOpened():
+        print(f"[오류] idle 영상을 열 수 없습니다: {idle_video_path}")
+        return None
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frames.append(frame)
+
+    cap.release()
+
+    if len(frames) == 0:
+        print(f"[오류] idle 영상에서 프레임을 읽을 수 없습니다")
+        return None
+
+    print(f"[idle 영상 로드 완료] {len(frames)} 프레임 ({len(frames)/25:.1f}초)")
+
+    # 캐시에 저장
+    _idle_frames_cache[cache_key] = frames
+
+    return frames
 
 
 def _get_fallback_avatar(avatar_path, long_avatar, short_avatar):
@@ -2882,7 +3520,7 @@ def process_generation_request(request_data):
         video_filename = os.path.basename(output_video)
         complete_data = {
             'video_path': output_video,
-            'video_url': f'/video/{video_filename}',
+            'video_url': build_video_url(video_filename),
             'elapsed': elapsed,
             'audio_duration': audio_duration  # 음성 길이 전달 (영상 유지 시간 계산용)
         }
@@ -2944,8 +3582,10 @@ def api_v2_lipsync():
             "text": "합성할 텍스트",
             "avatar": "avatar_name",      // precomputed 폴더의 아바타 이름
             "avatar_path": "path.pkl",    // 또는 직접 경로 지정
-            "tts_engine": "elevenlabs",    // optional
-            "tts_voice": "Custom"      // optional
+            "tts_engine": "elevenlabs",   // optional
+            "tts_voice": "Custom",        // optional
+            "resolution": "720p",         // optional (720p, 480p, 360p)
+            "persist": false              // optional - true면 영구 저장 (녹화 모드)
         }
 
     Response:
@@ -2953,7 +3593,8 @@ def api_v2_lipsync():
             "success": true,
             "video_path": "results/realtime/output_with_audio.mp4",
             "video_url": "/video/output_with_audio.mp4",
-            "elapsed": 25.3
+            "elapsed": 25.3,
+            "persistent": false
         }
     """
     global lipsync_engine
@@ -2964,17 +3605,19 @@ def api_v2_lipsync():
     avatar_path = data.get('avatar_path', '')
     tts_engine = data.get('tts_engine', DEFAULT_TTS_ENGINE)
     tts_voice = data.get('tts_voice', DEFAULT_TTS_VOICE)
-    frame_skip = data.get('frame_skip', 1)  # 프레임 스킵 (1=없음, 2=절반추론, 3=1/3추론)
-    resolution = data.get('resolution', '720p')  # 해상도 (720p, 480p, 360p)
+    frame_skip, resolution = parse_quality_params(data)  # quality 또는 frame_skip/resolution
+    persist = data.get('persist', False)  # 영구 저장 여부 (녹화 모드)
 
-    # 아바타 경로 결정
+    # 아바타 경로 결정 (해상도 고려)
     if not avatar_path and avatar:
-        avatar_path = f"precomputed/{avatar}_precomputed.pkl"
+        # avatar가 "auto"이면 자동 선택 (나중에 TTS 후 결정됨)
+        if avatar != 'auto':
+            avatar_path = _get_resolution_avatar(avatar, resolution)
 
-    if not avatar_path:
+    if not avatar_path and avatar != 'auto':
         return jsonify({"success": False, "error": "avatar 또는 avatar_path가 필요합니다"}), 400
 
-    if not os.path.exists(avatar_path):
+    if avatar_path and not os.path.exists(avatar_path):
         return jsonify({"success": False, "error": f"아바타 파일을 찾을 수 없습니다: {avatar_path}"}), 404
 
     if not text:
@@ -2991,26 +3634,29 @@ def api_v2_lipsync():
         tts_result = None
         precomputed_data = None
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            # TTS와 프리컴퓨트 로드를 병렬로 실행
-            tts_future = executor.submit(generate_tts_audio, text, tts_engine, tts_voice, tts_output)
-            precompute_future = executor.submit(load_precomputed_data, avatar_path)
+        # avatar가 auto인 경우 TTS 후에 아바타 선택하므로 병렬 처리 분기
+        if avatar_path:
+            # 아바타 경로가 있으면 병렬 처리
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                tts_future = executor.submit(generate_tts_audio, text, tts_engine, tts_voice, tts_output)
+                precompute_future = executor.submit(load_precomputed_data, avatar_path)
 
-            # 결과 수집
-            for future in as_completed([tts_future, precompute_future]):
-                if future == tts_future:
-                    tts_result = future.result()
-                else:
-                    precomputed_data = future.result()
+                for future in as_completed([tts_future, precompute_future]):
+                    if future == tts_future:
+                        tts_result = future.result()
+                    else:
+                        precomputed_data = future.result()
 
-        parallel_time = time.time() - start_time
-        print(f"[병렬 처리] TTS + 프리컴퓨트 로드 완료: {parallel_time:.2f}초")
+            parallel_time = time.time() - start_time
+            print(f"[병렬 처리] TTS + 프리컴퓨트 로드 완료: {parallel_time:.2f}초")
+        else:
+            # avatar가 auto인 경우: TTS 먼저 실행 후 아바타 선택
+            tts_result = generate_tts_audio(text, tts_engine, tts_voice, tts_output)
+            parallel_time = time.time() - start_time
+            print(f"[순차 처리] TTS 완료: {parallel_time:.2f}초 (아바타 자동 선택 대기)")
 
         if not tts_result:
             return jsonify({"success": False, "error": "TTS 생성 실패"}), 500
-
-        if not precomputed_data:
-            return jsonify({"success": False, "error": "프리컴퓨트 로드 실패"}), 500
 
         # TTS 생성 후 실제 오디오 길이로 아바타 자동 선택 (frame_skip 모드 + 해상도 기반)
         audio_numpy, sample_rate = tts_result
@@ -3042,13 +3688,32 @@ def api_v2_lipsync():
 
         if output_video:
             elapsed = time.time() - start_time
-            # 실제 생성된 파일 경로에서 파일명 추출
             video_filename = os.path.basename(output_video)
+
+            # persist=True면 영구 저장 폴더로 복사
+            if persist:
+                import shutil
+                saved_dir = Path("results/saved")
+                saved_dir.mkdir(parents=True, exist_ok=True)
+                saved_path = saved_dir / video_filename
+                try:
+                    shutil.copy2(output_video, str(saved_path))
+                    # JSON 메타데이터도 복사
+                    json_source = Path(output_video).with_suffix('.json')
+                    if json_source.exists():
+                        shutil.copy2(str(json_source), str(saved_path.with_suffix('.json')))
+                    print(f"[영구 저장] {video_filename} → results/saved/")
+                except Exception as e:
+                    print(f"[영구 저장 실패] {e}")
+
+            video_url = build_video_url(video_filename)
+            print(f"[API 응답] video_url = {video_url}")
             return jsonify({
                 "success": True,
                 "video_path": output_video,
-                "video_url": f"/video/{video_filename}",
-                "elapsed": round(elapsed, 2)
+                "video_url": video_url,
+                "elapsed": round(elapsed, 2),
+                "persistent": persist
             })
         else:
             return jsonify({"success": False, "error": "립싱크 생성 실패"}), 500
@@ -3069,20 +3734,20 @@ def api_v2_lipsync_stream():
 
     Request:
         {
-            "text": "립싱크로 만들 텍스트 (LLM 응답)",
-            "avatar": "avatar_name",
-            "avatar_path": "path.pkl",  // optional
-            "tts_engine": "elevenlabs",
-            "tts_voice": "Custom",
-            "resolution": "720p",
-            "frame_skip": 1
+            "text": "립싱크로 만들 텍스트",
+            "avatar": "auto",             // 아바타 (auto, new_talk_short, new_talk_long)
+            "resolution": "720p",         // 해상도 (720p, 480p, 360p)
+            "tts_engine": "cosyvoice",    // TTS 엔진
+            "tts_voice": "Custom",        // 음성
+            "frame_skip": 1,              // 프레임 스킵
+            "persist": false              // 영구 저장 여부 (녹화 모드)
         }
 
     Response (SSE):
         data: {"type": "status", "stage": "tts", "message": "TTS 생성 중..."}
-        data: {"type": "status", "stage": "tts_done", "message": "TTS 완료", "audio_url": "...", "duration": 3.5}
+        data: {"type": "status", "stage": "tts_done", "audio_url": "...", "duration": 3.5}
         data: {"type": "status", "stage": "lipsync", "message": "립싱크 생성 중..."}
-        data: {"type": "done", "video_url": "/video/...", "audio_url": "...", "elapsed": {...}}
+        data: {"type": "done", "video_url": "/video/...", "persistent": false, "elapsed": {...}}
         data: {"type": "error", "message": "오류 메시지"}
     """
     global lipsync_engine
@@ -3093,27 +3758,29 @@ def api_v2_lipsync_stream():
     avatar_path = data.get('avatar_path', '')
     tts_engine = data.get('tts_engine', DEFAULT_TTS_ENGINE)
     tts_voice = data.get('tts_voice', DEFAULT_TTS_VOICE)
-    frame_skip = data.get('frame_skip', 1)
-    resolution = data.get('resolution', '720p')
+    frame_skip, resolution = parse_quality_params(data)  # quality 또는 frame_skip/resolution
+    persist = data.get('persist', False)  # 영구 저장 여부
 
-    # 아바타 경로 결정
+    # 아바타 경로 결정 (해상도 고려)
     if not avatar_path and avatar:
-        avatar_path = f"precomputed/{avatar}_precomputed.pkl"
+        # avatar가 "auto"이면 자동 선택 (나중에 TTS 후 결정됨)
+        if avatar != 'auto':
+            avatar_path = _get_resolution_avatar(avatar, resolution)
 
     if not text:
         return jsonify({"error": "text가 필요합니다"}), 400
 
-    if not avatar_path:
+    if not avatar_path and avatar != 'auto':
         return jsonify({"error": "avatar 또는 avatar_path가 필요합니다"}), 400
 
-    if not os.path.exists(avatar_path):
+    if avatar_path and not os.path.exists(avatar_path):
         return jsonify({"error": f"아바타 파일을 찾을 수 없습니다: {avatar_path}"}), 404
 
     if not lipsync_engine or not lipsync_engine.loaded:
         return jsonify({"error": "립싱크 엔진이 로드되지 않았습니다"}), 503
 
     def generate():
-        nonlocal text, avatar_path, tts_engine, tts_voice, frame_skip, resolution
+        nonlocal text, avatar_path, tts_engine, tts_voice, frame_skip, resolution, persist
 
         try:
             start_time = time.time()
@@ -3164,7 +3831,23 @@ def api_v2_lipsync_stream():
 
             if output_video:
                 video_filename = os.path.basename(output_video)
-                yield f"data: {json.dumps({'type': 'done', 'text': text, 'video_path': output_video, 'video_url': f'/video/{video_filename}', 'audio_url': '/assets/audio/tts_output.wav', 'audio_duration': round(audio_duration, 2), 'elapsed': {'tts': round(tts_time, 2), 'lipsync': round(lipsync_time, 2), 'total': round(total_time, 2)}}, ensure_ascii=False)}\n\n"
+
+                # persist=True면 영구 저장 폴더로 복사
+                if persist:
+                    import shutil
+                    saved_dir = Path("results/saved")
+                    saved_dir.mkdir(parents=True, exist_ok=True)
+                    saved_path = saved_dir / video_filename
+                    try:
+                        shutil.copy2(output_video, str(saved_path))
+                        json_source = Path(output_video).with_suffix('.json')
+                        if json_source.exists():
+                            shutil.copy2(str(json_source), str(saved_path.with_suffix('.json')))
+                        print(f"[영구 저장] {video_filename} → results/saved/")
+                    except Exception as e:
+                        print(f"[영구 저장 실패] {e}")
+
+                yield f"data: {json.dumps({'type': 'done', 'text': text, 'video_path': output_video, 'video_url': build_video_url(video_filename), 'audio_url': '/assets/audio/tts_output.wav', 'audio_duration': round(audio_duration, 2), 'persistent': persist, 'elapsed': {'tts': round(tts_time, 2), 'lipsync': round(lipsync_time, 2), 'total': round(total_time, 2)}}, ensure_ascii=False)}\n\n"
             else:
                 yield f"data: {json.dumps({'type': 'error', 'message': '립싱크 생성 실패'}, ensure_ascii=False)}\n\n"
 
@@ -3221,8 +3904,7 @@ def api_generate_streaming():
     tts_engine = data.get('tts_engine', DEFAULT_TTS_ENGINE)
     tts_voice = data.get('tts_voice', DEFAULT_TTS_VOICE)
     client_sid = data.get('sid')  # 클라이언트 SID
-    frame_skip = data.get('frame_skip', 1)  # 프레임 스킵 (1=없음, 2=절반추론, 3=1/3추론)
-    resolution = data.get('resolution', '720p')  # 해상도 (720p, 480p, 360p)
+    frame_skip, resolution = parse_quality_params(data)  # quality 또는 frame_skip/resolution
 
     if not avatar_path:
         return jsonify({"error": "avatar_path가 필요합니다"}), 400
@@ -3349,7 +4031,8 @@ def api_generate_streaming():
                 (audio_numpy, sample_rate),
                 sid=sid,
                 emit_callback=socketio.emit,
-                frame_skip=frame_skip
+                frame_skip=frame_skip,
+                resolution=resolution
             )
 
             timing_log['lipsync'] = time.time() - step_start
@@ -3387,10 +4070,72 @@ def api_generate_streaming():
 @app.route('/video/<path:filename>')
 def serve_video(filename):
     """비디오 파일 서빙"""
+    print(f"[비디오 요청] filename = {filename}")
+
+    # 저장된 폴더 먼저 확인 (영구 보관 파일)
+    saved_path = Path("results/saved") / filename
+    if saved_path.exists():
+        print(f"[비디오 서빙] {saved_path} (영구 저장)")
+        mimetype = 'video/webm' if filename.endswith('.webm') else 'video/mp4'
+        return send_file(str(saved_path), mimetype=mimetype)
+
+    # 임시 폴더 확인
     video_path = Path("results/realtime") / filename
     if video_path.exists():
-        return send_file(str(video_path), mimetype='video/mp4')
+        print(f"[비디오 서빙] {video_path} (임시)")
+        mimetype = 'video/webm' if filename.endswith('.webm') else 'video/mp4'
+        return send_file(str(video_path), mimetype=mimetype)
+
+    print(f"[비디오 404] 파일 없음: saved={saved_path.exists()}, realtime={video_path.exists()}")
     return "Not found", 404
+
+
+@app.route('/api/video/save', methods=['POST'])
+def save_video():
+    """
+    비디오 파일을 영구 저장 폴더로 이동 (record.html 다운로드용)
+
+    Request:
+        {"video_url": "/video/filename.mp4"}
+
+    Response:
+        {"success": true, "saved_url": "/video/filename.mp4"}
+    """
+    import shutil
+
+    data = request.json or {}
+    video_url = data.get('video_url', '')
+
+    if not video_url:
+        return jsonify({"success": False, "error": "video_url 필수"}), 400
+
+    # URL에서 파일명 추출
+    filename = video_url.split('/')[-1]
+    source_path = Path("results/realtime") / filename
+    saved_dir = Path("results/saved")
+    saved_path = saved_dir / filename
+
+    # 저장 폴더 생성
+    saved_dir.mkdir(parents=True, exist_ok=True)
+
+    if source_path.exists():
+        try:
+            shutil.copy2(str(source_path), str(saved_path))
+            # JSON 메타데이터도 복사
+            json_source = source_path.with_suffix('.json')
+            if json_source.exists():
+                shutil.copy2(str(json_source), str(saved_path.with_suffix('.json')))
+
+            print(f"[파일 저장] {filename} → results/saved/")
+            return jsonify({
+                "success": True,
+                "saved_url": f"/video/{filename}",
+                "message": "파일이 영구 저장되었습니다"
+            })
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
+    else:
+        return jsonify({"success": False, "error": "파일을 찾을 수 없습니다"}), 404
 
 
 @app.route('/assets/<path:filename>')
@@ -3467,6 +4212,7 @@ if __name__ == '__main__':
     # 디렉토리 생성
     Path("templates").mkdir(exist_ok=True)
     Path("results/realtime").mkdir(parents=True, exist_ok=True)
+    Path("results/saved").mkdir(parents=True, exist_ok=True)  # 영구 저장 폴더
     Path("assets/audio").mkdir(parents=True, exist_ok=True)
 
     print("=" * 50)

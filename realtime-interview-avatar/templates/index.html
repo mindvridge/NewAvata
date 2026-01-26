@@ -21,9 +21,11 @@
         }
 
         .container {
-            max-width: 2400px;
+            width: 1600px;  /* 고정 너비 */
+            max-width: 100vw;
             margin: 0 auto;
             padding: 40px;
+            box-sizing: border-box;
         }
 
         header {
@@ -46,9 +48,10 @@
 
         .main-content {
             display: grid;
-            grid-template-columns: 1fr 1.5fr;
+            grid-template-columns: 420px 1fr;  /* 왼쪽 패널 고정 너비 */
             gap: 40px;
             margin-top: 30px;
+            width: 100%;
         }
 
         .panel {
@@ -56,6 +59,15 @@
             border-radius: 24px;
             padding: 30px;
             border: 1px solid rgba(255, 255, 255, 0.1);
+            overflow: hidden;  /* 내부 콘텐츠가 패널을 넘지 않도록 */
+        }
+
+        /* 왼쪽 패널 (설정) - 고정 너비 */
+        .panel:first-child {
+            width: 420px;
+            min-width: 420px;
+            max-width: 420px;
+            box-sizing: border-box;
         }
 
         .panel h2 {
@@ -75,8 +87,20 @@
             font-size: 1.2em;
         }
 
-        select, button {
+        select, button:not(.send-btn) {
             width: 100%;
+            padding: 16px 24px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+            font-size: 1.2em;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        /* send-btn 기본 스타일 (width 제외) */
+        button.send-btn {
             padding: 16px 24px;
             border-radius: 12px;
             border: 1px solid rgba(255, 255, 255, 0.2);
@@ -132,6 +156,8 @@
             border-radius: 12px;
             border: 1px solid rgba(0, 210, 255, 0.3);
             margin-bottom: 20px;
+            width: 100%;
+            box-sizing: border-box;
         }
 
         .tts-options .form-group {
@@ -157,6 +183,9 @@
             border-radius: 16px;
             margin-bottom: 20px;
             overflow: hidden;
+            width: 100%;
+            max-width: 100%;
+            box-sizing: border-box;
         }
 
         .chat-messages {
@@ -204,10 +233,15 @@
             padding: 15px;
             background: rgba(0, 0, 0, 0.2);
             border-top: 1px solid rgba(255, 255, 255, 0.1);
+            width: 100%;
+            box-sizing: border-box;
+            flex-wrap: nowrap;  /* 줄바꿈 방지 */
         }
 
         .chat-input {
-            flex: 1;
+            flex: 1 1 auto;
+            min-width: 0;  /* flex item이 축소될 수 있도록 */
+            width: auto;  /* input은 select/button 규칙 적용 안됨 */
             padding: 14px 20px;
             border-radius: 12px;
             border: 1px solid rgba(255, 255, 255, 0.2);
@@ -215,6 +249,7 @@
             color: #fff;
             font-size: 1.1em;
             font-family: inherit;
+            box-sizing: border-box;
         }
 
         .chat-input:focus {
@@ -227,48 +262,38 @@
         }
 
         .send-btn {
-            width: auto;
-            padding: 14px 30px;
+            width: 120px;  /* 고정 너비 - "전송"과 "생성 중..." 모두 수용 */
+            min-width: 120px;
+            max-width: 120px;
+            padding: 14px 20px;
             white-space: nowrap;
+            text-align: center;
+            flex-shrink: 0;  /* 축소 방지 */
+            flex-grow: 0;    /* 확대 방지 */
+            box-sizing: border-box;
         }
 
-        /* 비디오 영역 - 해상도별 크기 (비율 1.75:1 유지) */
+        /* 비디오 영역 - 반응형 (비율 1.75:1 유지) */
         .video-container {
             position: relative;
             background: #000;
             border-radius: 24px;
             overflow: hidden;
+            /* 반응형: 패널 너비에 맞춤, 비율 유지 */
             width: 100%;
-            /* 기본 720p 크기 */
-            max-width: 1268px;
-            height: 724px;
+            aspect-ratio: 1268 / 724;  /* 1.75:1 비율 유지 */
             margin: 0 auto;
-            transition: max-width 0.3s ease, height 0.3s ease;
         }
 
-        .video-container.resolution-720p {
-            max-width: 1268px;
-            height: 724px;
-        }
-
-        .video-container.resolution-480p {
-            max-width: 848px;
-            height: 484px;
-        }
-
-        .video-container.resolution-360p {
-            max-width: 632px;
-            height: 360px;
-        }
+        /* 해상도 클래스는 서버 출력용으로만 사용 */
 
         .video-container video {
             position: absolute;
             top: 0;
-            left: 50%;
-            transform: translateX(-50%);
+            left: 0;
+            width: 100%;
             height: 100%;
-            max-width: 100%;
-            object-fit: contain;
+            object-fit: fill;  /* 컨테이너에 맞춤 */
         }
 
         #idleVideo, #resultVideo, #streamCanvas {
@@ -290,22 +315,18 @@
         }
 
         /* 크롭 모드일 때 resultVideo 위치 (중앙 면접관 영역) */
+        /* 위치와 크기는 JavaScript에서 동적으로 계산하여 인라인 스타일로 설정 */
         #resultVideo.center-crop {
-            left: 50%;
-            transform: translateX(-50%);
-            /* 크롭된 영상은 원본보다 좁으므로 width는 자동 */
-            width: auto;
-            height: 100%;
+            max-width: none !important;
+            object-fit: fill !important;  /* 지정된 width/height에 정확히 맞춤 */
         }
 
         #streamCanvas {
             position: absolute;
             top: 0;
-            left: 50%;
-            transform: translateX(-50%);
+            left: 0;
+            width: 100%;
             height: 100%;
-            max-width: 100%;
-            object-fit: contain;
             z-index: 4;
             visibility: hidden;
             background: transparent;
@@ -387,6 +408,18 @@
             margin-top: 15px;
             padding: 12px 20px;
             font-size: 1em;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        .button-group button {
+            flex: 1;
         }
 
         /* 프롬프트 설정 영역 */
@@ -602,30 +635,12 @@
                 <a href="/" style="color: #00d2ff; text-decoration: none; margin: 0 15px;">면접 시뮬레이션</a>
                 <a href="/record" style="color: #feca57; text-decoration: none; margin: 0 15px;">🎬 영상 녹화</a>
             </div>
-            <div class="llm-status-container" id="llmStatusContainer">
-                <div class="llm-status-item" id="llmPrimaryStatus">
-                    <span class="llm-status-dot checking" id="llmPrimaryDot"></span>
-                    <span class="llm-status-name" id="llmPrimaryName">LLM API</span>
-                    <span class="llm-status-latency" id="llmPrimaryLatency">확인 중...</span>
-                </div>
-                <div class="llm-status-item" id="llmFallbackStatus">
-                    <span class="llm-status-dot checking" id="llmFallbackDot"></span>
-                    <span class="llm-status-name" id="llmFallbackName">OpenAI</span>
-                    <span class="llm-status-latency" id="llmFallbackLatency">확인 중...</span>
-                </div>
-            </div>
+            <!-- LLM 상태 표시 제거됨 -->
         </header>
 
         <div class="main-content">
             <div class="panel">
                 <h2>면접</h2>
-
-                <div class="form-group">
-                    <label>아바타 선택</label>
-                    <select id="avatarSelect">
-                        <option value="">로딩 중...</option>
-                    </select>
-                </div>
 
                 <div class="tts-options">
                     <div class="form-group">
@@ -668,6 +683,22 @@
                             "면접 시작" 버튼을 눌러 면접을 시작하세요
                         </div>
                     </div>
+                    <!-- 예시 텍스트 선택 -->
+                    <div class="example-text-container" style="margin-bottom: 10px;">
+                        <select id="exampleTextSelect" onchange="selectExampleText()" style="width: 100%; padding: 8px 12px; border-radius: 8px; border: 1px solid #333; background: #1e1e1e; color: #fff; font-size: 0.9rem;">
+                            <option value="">테스트 예시 선택...</option>
+                            <option value="안녕하세요">짧은 인사 (1문장)</option>
+                            <option value="안녕하세요. 만나서 반갑습니다.">기본 인사 (2문장)</option>
+                            <option value="안녕하세요. 저는 AI 면접관입니다. 오늘 면접에 참석해 주셔서 감사합니다.">긴 인사 (3문장)</option>
+                            <option value="자기소개를 해 주시겠어요?">면접 질문 - 자기소개</option>
+                            <option value="지원 동기에 대해 말씀해 주세요.">면접 질문 - 지원 동기</option>
+                            <option value="본인의 강점과 약점에 대해 말씀해 주세요.">면접 질문 - 강점/약점</option>
+                            <option value="5년 후 자신의 모습을 어떻게 그리고 계신가요?">면접 질문 - 미래 비전</option>
+                            <option value="마지막으로 하고 싶은 말씀이 있으신가요?">면접 질문 - 마무리</option>
+                            <option value="네, 좋은 답변 감사합니다. 다음 질문으로 넘어가겠습니다.">면접관 피드백</option>
+                            <option value="오늘 면접은 여기까지입니다. 결과는 추후 개별 연락 드리겠습니다. 수고하셨습니다.">면접 종료 멘트</option>
+                        </select>
+                    </div>
                     <div class="chat-input-container">
                         <input type="text" class="chat-input" id="chatInput"
                                placeholder="답변을 입력하세요..."
@@ -678,7 +709,7 @@
                     </div>
                 </div>
 
-                <div class="button-group" style="display: flex; gap: 10px; margin-top: 15px;">
+                <div class="button-group">
                     <button class="primary" id="startInterviewBtn" onclick="startInterview()">
                         면접 시작
                     </button>
@@ -709,7 +740,7 @@
                 <h2>면접관</h2>
 
                 <div class="video-container resolution-720p">
-                    <video id="idleVideo" src="/assets/720p/기본.mp4" loop muted autoplay playsinline></video>
+                    <video id="idleVideo" src="/assets/720p/idle_long.mp4" loop muted autoplay playsinline></video>
                     <canvas id="streamCanvas"></canvas>
                     <video id="resultVideo" playsinline></video>
                     <audio id="streamAudio" style="display: none;"></audio>
@@ -765,181 +796,89 @@
         let streamFps = 25;  // 스트리밍 FPS
         let clientSid = null;  // 클라이언트 세션 ID
 
-        // 대기 중 영상 관련 변수 (끄덕 + 서류보기)
-        // 해상도별 끄덕 영상 (해상도별 폴더가 없으면 기본 경로 사용)
-        const NOD_VIDEOS_BASE = ['끄덕.mp4', '끄덕2.mp4', '서류보기.mp4', '서류보기2.mp4'];
-        let isNodPlaying = false;  // 대기 영상 재생 중 플래그
-        let nodVideoElement = null;  // 대기 비디오 요소
-        let shouldStopNod = false;  // 대기 영상 중지 플래그
+        // 대기 중 영상 관련 변수 (idle_short 사용)
+        let isWaitingVideoPlaying = false;  // 대기 영상 재생 중 플래그
+        let shouldStopWaiting = false;  // 대기 영상 중지 플래그
 
         // 현재 해상도에 맞는 영상 경로 반환
         function getResolutionVideoPath(filename) {
             const resolution = document.getElementById('resolutionSelect').value;
-            // 해상도별 경로 시도, 없으면 기본 경로
             return `/assets/${resolution}/${filename}`;
         }
 
-        // 해상도별 끄덕 영상 목록 가져오기
-        function getNodVideos() {
-            const resolution = document.getElementById('resolutionSelect').value;
-            return NOD_VIDEOS_BASE.map(v => `/assets/${resolution}/${v}`);
-        }
+        // 대기 영상 시작 함수 (idle_short 사용)
+        function startWaitingVideo() {
+            if (isWaitingVideoPlaying || isVideoPlaying) return;
 
-        // 끄덕 영상 시작 함수
-        function startNodVideo() {
-            if (isNodPlaying || isVideoPlaying) return;
-
-            const idleVideo = document.getElementById('idleVideo');
             const resultVideo = document.getElementById('resultVideo');
+            const waitingVideo = getResolutionVideoPath('idle_short.mp4');
+            console.log('Starting waiting video:', waitingVideo);
 
-            // 현재 해상도에 맞는 끄덕 영상 목록
-            const nodVideos = getNodVideos();
-            // 랜덤으로 끄덕 영상 선택
-            const randomNodVideo = nodVideos[Math.floor(Math.random() * nodVideos.length)];
-            console.log('Starting nod video:', randomNodVideo);
+            isWaitingVideoPlaying = true;
+            shouldStopWaiting = false;
 
-            isNodPlaying = true;
-            shouldStopNod = false;
+            // 크롭 모드 스타일 초기화
+            resultVideo.classList.remove('center-crop');
+            resultVideo.style.left = '';
+            resultVideo.style.top = '';
+            resultVideo.style.width = '';
+            resultVideo.style.height = '';
+            resultVideo.style.transform = '';
 
-            // resultVideo를 끄덕 영상으로 사용
-            resultVideo.src = randomNodVideo + '?' + Date.now();
-            resultVideo.muted = true;  // 끄덕 영상은 음소거
+            // resultVideo를 대기 영상으로 사용
+            resultVideo.src = waitingVideo + '?' + Date.now();
+            resultVideo.muted = true;
             resultVideo.style.opacity = '0';
 
             resultVideo.oncanplaythrough = () => {
                 resultVideo.oncanplaythrough = null;
-                if (shouldStopNod) {
-                    // 립싱크가 준비되어 중지 요청이 온 경우
-                    isNodPlaying = false;
+                if (shouldStopWaiting) {
+                    isWaitingVideoPlaying = false;
                     return;
                 }
                 resultVideo.style.opacity = '1';
                 resultVideo.play().catch(err => {
-                    console.error('Nod video play failed:', err);
-                    isNodPlaying = false;
+                    console.error('Waiting video play failed:', err);
+                    isWaitingVideoPlaying = false;
                 });
             };
 
             resultVideo.onended = () => {
-                if (shouldStopNod || !isGenerating) {
-                    // 립싱크 준비됨 또는 생성 취소 - 끄덕 중지
+                if (shouldStopWaiting || !isGenerating) {
                     resultVideo.style.opacity = '0';
-                    isNodPlaying = false;
+                    isWaitingVideoPlaying = false;
                     return;
                 }
 
-                // 계속 생성 중이면 다른 끄덕 영상 랜덤 재생
-                const nodVideos = getNodVideos();
-                const nextNodVideo = nodVideos[Math.floor(Math.random() * nodVideos.length)];
-                console.log('Continuing nod video:', nextNodVideo);
-                resultVideo.src = nextNodVideo + '?' + Date.now();
-                resultVideo.load();
-
-                resultVideo.oncanplaythrough = () => {
-                    resultVideo.oncanplaythrough = null;
-                    if (shouldStopNod) {
-                        isNodPlaying = false;
-                        return;
-                    }
-                    resultVideo.play().catch(err => {
-                        console.error('Nod video play failed:', err);
-                        isNodPlaying = false;
-                    });
-                };
+                // 계속 생성 중이면 대기 영상 반복 재생
+                console.log('Looping waiting video');
+                resultVideo.currentTime = 0;
+                resultVideo.play().catch(err => {
+                    console.error('Waiting video loop failed:', err);
+                    isWaitingVideoPlaying = false;
+                });
             };
 
             resultVideo.load();
         }
 
-        // 끄덕 영상 중지 및 립싱크로 전환 함수
-        function stopNodAndPlayLipsync(videoUrl) {
-            shouldStopNod = true;
+        // 대기 영상 중지 함수
+        function stopWaitingVideo() {
+            shouldStopWaiting = true;
             const resultVideo = document.getElementById('resultVideo');
 
-            // 현재 끄덕 영상이 재생 중이면
-            if (isNodPlaying) {
-                console.log('Stopping nod video, switching to lipsync');
-                // 페이드 아웃 후 립싱크 전환
+            if (isWaitingVideoPlaying) {
+                console.log('Stopping waiting video');
                 resultVideo.style.opacity = '0';
 
                 setTimeout(() => {
-                    isNodPlaying = false;
+                    isWaitingVideoPlaying = false;
                     resultVideo.pause();
                     resultVideo.onended = null;
                     resultVideo.oncanplaythrough = null;
-                    // 립싱크 비디오 로드 및 재생은 complete 핸들러에서 처리
                 }, 250);
             }
         }
-
-        // LLM 상태 확인 함수
-        async function checkLLMStatus() {
-            try {
-                const response = await fetch('/api/llm_status');
-                const status = await response.json();
-
-                // Primary (LLM API Server) 상태 표시
-                const primaryDot = document.getElementById('llmPrimaryDot');
-                const primaryName = document.getElementById('llmPrimaryName');
-                const primaryLatency = document.getElementById('llmPrimaryLatency');
-                const primaryItem = document.getElementById('llmPrimaryStatus');
-
-                primaryDot.className = 'llm-status-dot ' + status.primary.status;
-                primaryName.textContent = status.primary.name;
-
-                if (status.primary.status === 'online') {
-                    primaryLatency.textContent = status.primary.latency + 'ms';
-                } else if (status.primary.status === 'offline') {
-                    primaryLatency.textContent = '오프라인';
-                } else if (status.primary.status === 'timeout') {
-                    primaryLatency.textContent = '타임아웃';
-                } else if (status.primary.status === 'error') {
-                    primaryLatency.textContent = status.primary.error || '오류';
-                }
-
-                // Fallback (OpenAI) 상태 표시
-                const fallbackDot = document.getElementById('llmFallbackDot');
-                const fallbackName = document.getElementById('llmFallbackName');
-                const fallbackLatency = document.getElementById('llmFallbackLatency');
-                const fallbackItem = document.getElementById('llmFallbackStatus');
-
-                fallbackDot.className = 'llm-status-dot ' + status.fallback.status;
-                fallbackName.textContent = status.fallback.name;
-
-                if (status.fallback.status === 'online') {
-                    fallbackLatency.textContent = status.fallback.latency + 'ms';
-                } else if (status.fallback.status === 'not_configured') {
-                    fallbackLatency.textContent = '미설정';
-                } else if (status.fallback.status === 'offline') {
-                    fallbackLatency.textContent = '오프라인';
-                } else if (status.fallback.status === 'timeout') {
-                    fallbackLatency.textContent = '타임아웃';
-                } else if (status.fallback.status === 'error') {
-                    fallbackLatency.textContent = status.fallback.error || '오류';
-                }
-
-                // 활성 서버 표시
-                primaryItem.classList.remove('llm-status-active');
-                fallbackItem.classList.remove('llm-status-active');
-
-                if (status.active === 'primary') {
-                    primaryItem.classList.add('llm-status-active');
-                } else if (status.active === 'fallback') {
-                    fallbackItem.classList.add('llm-status-active');
-                }
-
-                console.log('LLM Status:', status);
-            } catch (error) {
-                console.error('LLM status check failed:', error);
-                document.getElementById('llmPrimaryLatency').textContent = '확인 실패';
-                document.getElementById('llmFallbackLatency').textContent = '확인 실패';
-            }
-        }
-
-        // 페이지 로드시 LLM 상태 확인
-        checkLLMStatus();
-        // 30초마다 상태 갱신
-        setInterval(checkLLMStatus, 30000);
 
         // WebSocket 이벤트
         socket.on('connect', () => {
@@ -1002,7 +941,7 @@
             }
 
             // 이미 립싱크 비디오가 재생 중이면 무시 (중복 방지)
-            if (isVideoPlaying && !isNodPlaying) {
+            if (isVideoPlaying && !isWaitingVideoPlaying) {
                 console.log('Lipsync video already playing, ignoring duplicate complete event');
                 return;
             }
@@ -1011,16 +950,16 @@
             const resultVideo = document.getElementById('resultVideo');
             const videoUrl = data.video_url || '/video/output_with_audio.mp4';
 
-            // 끄덕 영상 중지 플래그 설정
-            shouldStopNod = true;
+            // 대기 영상 중지 플래그 설정
+            shouldStopWaiting = true;
 
-            // 끄덕 영상이 재생 중이면 페이드 아웃 후 립싱크 전환
-            if (isNodPlaying) {
-                console.log('Stopping nod video, transitioning to lipsync');
+            // 대기 영상이 재생 중이면 페이드 아웃 후 립싱크 전환
+            if (isWaitingVideoPlaying) {
+                console.log('Stopping waiting video, transitioning to lipsync');
                 resultVideo.style.opacity = '0';
 
                 setTimeout(() => {
-                    isNodPlaying = false;
+                    isWaitingVideoPlaying = false;
                     resultVideo.pause();
                     resultVideo.onended = null;
                     resultVideo.oncanplaythrough = null;
@@ -1029,7 +968,7 @@
                     loadAndPlayLipsync(resultVideo, idleVideo, videoUrl, data);
                 }, 250);
             } else {
-                // 끄덕 영상이 없으면 바로 립싱크 재생
+                // 대기 영상이 없으면 바로 립싱크 재생
                 loadAndPlayLipsync(resultVideo, idleVideo, videoUrl, data);
             }
         });
@@ -1049,12 +988,42 @@
             idleVideo.muted = true;
 
             // 크롭 모드 처리 (서버에서 중앙 크롭된 영상)
+            // 고정 해상도 모드: 컨테이너와 영상 모두 1268x724 고정
             const cropCoords = data.crop_coords;
             if (cropCoords && cropCoords.center_crop) {
                 resultVideo.classList.add('center-crop');
-                console.log(`[립싱크] 중앙 크롭 모드: ${cropCoords.width}x${cropCoords.height} (x=${cropCoords.x})`);
+
+                // 서버에서 전달된 크롭 좌표 (720p 기준: x=456, w=355, h=724)
+                const cropX = cropCoords.x;        // 크롭 시작 X 좌표
+                const cropW = cropCoords.width;    // 크롭 너비
+                const cropH = cropCoords.height;   // 크롭 높이
+
+                // 고정 해상도: 컨테이너 = 영상 = 1268x724
+                // 스케일 = 1.0, 오프셋 = 0
+                // 크롭 위치 = 서버 좌표 그대로 사용
+                const cropLeft = cropX;
+                const cropTop = 0;
+                const cropWidth = cropW;
+                const cropHeight = cropH;
+
+                // 인라인 스타일로 정확한 위치 설정 (important로 CSS 오버라이드)
+                resultVideo.style.setProperty('left', cropLeft + 'px', 'important');
+                resultVideo.style.setProperty('top', cropTop + 'px', 'important');
+                resultVideo.style.setProperty('width', cropWidth + 'px', 'important');
+                resultVideo.style.setProperty('height', cropHeight + 'px', 'important');
+                resultVideo.style.setProperty('transform', 'none', 'important');
+
+                console.log(`[립싱크] 중앙 크롭 모드 (고정 해상도):`);
+                console.log(`  서버 크롭: x=${cropX}, w=${cropW}, h=${cropH}`);
+                console.log(`  화면 크롭: left=${cropLeft}px, top=${cropTop}px, ${cropWidth}x${cropHeight}`);
             } else {
                 resultVideo.classList.remove('center-crop');
+                // 기본 스타일 복원
+                resultVideo.style.left = '';
+                resultVideo.style.top = '';
+                resultVideo.style.width = '';
+                resultVideo.style.height = '';
+                resultVideo.style.transform = '';
             }
 
             // resultVideo 준비 (opacity 기반 전환)
@@ -1105,6 +1074,12 @@
                         resultVideo.muted = true;
                         resultVideo.currentTime = 0;
                         resultVideo.classList.remove('center-crop');  // 크롭 클래스 제거
+                        // 인라인 스타일 제거 (크롭 모드에서 설정한 것)
+                        resultVideo.style.left = '';
+                        resultVideo.style.top = '';
+                        resultVideo.style.width = '';
+                        resultVideo.style.height = '';
+                        resultVideo.style.transform = '';
                         // src 제거하지 않음 - 검정색 깜박임 방지
                     }, 300);
                 }, LAST_FRAME_HOLD_TIME);
@@ -1127,9 +1102,9 @@
         }
 
         socket.on('error', (data) => {
-            // 끄덕 영상 중지
-            shouldStopNod = true;
-            isNodPlaying = false;
+            // 대기 영상 중지
+            shouldStopWaiting = true;
+            isWaitingVideoPlaying = false;
             isGenerating = false;
             updateUIState(false);
             document.getElementById('queueStatus').classList.remove('visible');
@@ -1152,9 +1127,9 @@
         });
 
         socket.on('cancelled', (data) => {
-            // 끄덕 영상 중지
-            shouldStopNod = true;
-            isNodPlaying = false;
+            // 대기 영상 중지
+            shouldStopWaiting = true;
+            isWaitingVideoPlaying = false;
             isGenerating = false;
             updateUIState(false);
             document.getElementById('queueStatus').classList.remove('visible');
@@ -1211,23 +1186,26 @@
         let ttsAudioBlob = null;  // 최종 오디오 Blob
         
         socket.on('stream_audio_chunk', (data) => {
-            console.log('TTS audio chunk received, elapsed:', data.elapsed, 'is_final:', data.is_final);
-            
+            console.log('TTS audio chunk received, elapsed:', data.elapsed, 'is_final:', data.is_final, 'length:', data.audio?.length || 0);
+
             // 샘플레이트 저장
             if (data.sample_rate) {
                 streamSampleRate = data.sample_rate;
             }
-            
-            // Base64 문자열로 저장
-            ttsAudioChunks.push(data.audio);
-            
-            // 첫 청크가 도착하면 즉시 재생 시작 (스트리밍 효과)
-            if (ttsAudioChunks.length === 1 && !isStreamPlaying) {
-                playFirstAudioChunk(data.audio);
+
+            // 빈 청크는 저장하지 않음 (완료 신호일 수 있음)
+            if (data.audio && data.audio.length > 0) {
+                ttsAudioChunks.push(data.audio);
+
+                // 첫 청크가 도착하면 즉시 재생 시작 (스트리밍 효과)
+                if (ttsAudioChunks.length === 1 && !isStreamPlaying) {
+                    playFirstAudioChunk(data.audio);
+                }
             }
-            
+
             // 최종 청크인 경우 전체 오디오 재생
             if (data.is_final) {
+                console.log('Final audio chunk, total chunks:', ttsAudioChunks.length);
                 playCompleteAudio();
             }
         });
@@ -1258,18 +1236,69 @@
             }
         }
 
-        // 완전한 오디오 재생
-        function playCompleteAudio() {
+        // 완전한 오디오 재생 (Web Audio API로 WAV 청크들 합치기)
+        async function playCompleteAudio() {
             if (ttsAudioChunks.length === 0) return;
-            
+
             try {
-                // 모든 청크를 합쳐서 하나의 Base64 문자열 생성
-                const combinedBase64 = ttsAudioChunks.join('');
-                const audioUrl = 'data:audio/wav;base64,' + combinedBase64;
-                
-                streamAudio = new Audio(audioUrl);
-                streamAudio.preload = 'auto';
-                
+                // 빈 청크 필터링
+                const validChunks = ttsAudioChunks.filter(chunk => chunk && chunk.length > 0);
+                if (validChunks.length === 0) {
+                    console.warn('No valid audio chunks to play');
+                    return;
+                }
+
+                // 단일 청크인 경우 직접 재생
+                if (validChunks.length === 1) {
+                    const audioUrl = 'data:audio/wav;base64,' + validChunks[0];
+                    streamAudio = new Audio(audioUrl);
+                    streamAudio.preload = 'auto';
+                } else {
+                    // 여러 청크: Web Audio API로 합치기
+                    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    const decodedBuffers = [];
+
+                    // 각 WAV 청크를 디코딩
+                    for (let i = 0; i < validChunks.length; i++) {
+                        try {
+                            const binaryStr = atob(validChunks[i]);
+                            const bytes = new Uint8Array(binaryStr.length);
+                            for (let j = 0; j < binaryStr.length; j++) {
+                                bytes[j] = binaryStr.charCodeAt(j);
+                            }
+                            const audioBuffer = await audioContext.decodeAudioData(bytes.buffer.slice(0));
+                            decodedBuffers.push(audioBuffer);
+                        } catch (decodeErr) {
+                            console.warn(`Failed to decode chunk ${i}:`, decodeErr);
+                        }
+                    }
+
+                    if (decodedBuffers.length === 0) {
+                        console.error('All chunks failed to decode');
+                        return;
+                    }
+
+                    // AudioBuffer들을 합치기
+                    const totalLength = decodedBuffers.reduce((sum, buf) => sum + buf.length, 0);
+                    const sampleRate = decodedBuffers[0].sampleRate;
+                    const combinedBuffer = audioContext.createBuffer(1, totalLength, sampleRate);
+                    const channelData = combinedBuffer.getChannelData(0);
+
+                    let offset = 0;
+                    for (const buf of decodedBuffers) {
+                        channelData.set(buf.getChannelData(0), offset);
+                        offset += buf.length;
+                    }
+
+                    // AudioBuffer를 WAV Blob으로 변환
+                    const wavBlob = audioBufferToWav(combinedBuffer);
+                    const audioUrl = URL.createObjectURL(wavBlob);
+                    streamAudio = new Audio(audioUrl);
+                    streamAudio.preload = 'auto';
+
+                    audioContext.close();
+                }
+
                 // 버퍼가 충분하면 재생 시작
                 const bufferCount = streamFrameBuffer.filter(f => f).length;
                 if (bufferCount >= BUFFER_THRESHOLD && !isStreamPlaying) {
@@ -1285,6 +1314,54 @@
             } catch (err) {
                 console.error('Failed to create complete audio:', err);
             }
+        }
+
+        // AudioBuffer를 WAV Blob으로 변환하는 헬퍼 함수
+        function audioBufferToWav(audioBuffer) {
+            const numChannels = audioBuffer.numberOfChannels;
+            const sampleRate = audioBuffer.sampleRate;
+            const format = 1; // PCM
+            const bitDepth = 16;
+
+            const bytesPerSample = bitDepth / 8;
+            const blockAlign = numChannels * bytesPerSample;
+
+            const data = audioBuffer.getChannelData(0);
+            const samples = data.length;
+            const dataSize = samples * blockAlign;
+            const buffer = new ArrayBuffer(44 + dataSize);
+            const view = new DataView(buffer);
+
+            // WAV 헤더 작성
+            const writeString = (offset, string) => {
+                for (let i = 0; i < string.length; i++) {
+                    view.setUint8(offset + i, string.charCodeAt(i));
+                }
+            };
+
+            writeString(0, 'RIFF');
+            view.setUint32(4, 36 + dataSize, true);
+            writeString(8, 'WAVE');
+            writeString(12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, format, true);
+            view.setUint16(22, numChannels, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * blockAlign, true);
+            view.setUint16(32, blockAlign, true);
+            view.setUint16(34, bitDepth, true);
+            writeString(36, 'data');
+            view.setUint32(40, dataSize, true);
+
+            // 오디오 데이터 작성
+            let offset = 44;
+            for (let i = 0; i < samples; i++) {
+                const sample = Math.max(-1, Math.min(1, data[i]));
+                view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+                offset += 2;
+            }
+
+            return new Blob([buffer], { type: 'audio/wav' });
         }
 
         // 기존 stream_audio 이벤트 (호환성 유지)
@@ -1379,6 +1456,7 @@
         }
 
         // 프레임 렌더링 (오디오 동기화)
+        // 원본 MuseTalk: 오프셋 없이 오디오 시간과 비디오 프레임 직접 매핑
         function renderStreamFrame() {
             if (!streamAudio || streamAudio.paused || streamAudio.ended) return;
 
@@ -1466,20 +1544,31 @@
             document.getElementById('chatInput').disabled = generating;
         }
 
+        // CosyVoice 연결 테스트
+        async function checkCosyVoiceConnection() {
+            try {
+                const response = await fetch('/api/check_cosyvoice', {
+                    method: 'GET',
+                    timeout: 5000
+                });
+                const result = await response.json();
+
+                if (!result.connected) {
+                    console.error('[CosyVoice] 연결 실패:', result.error || '서버 응답 없음');
+                    console.warn('[CosyVoice] URL:', result.url || 'N/A');
+                    return false;
+                }
+                console.log('[CosyVoice] 연결 성공');
+                return true;
+            } catch (e) {
+                console.error('[CosyVoice] 연결 테스트 실패:', e.message);
+                return false;
+            }
+        }
+
         // 옵션 로드
         async function loadOptions() {
             try {
-                // 아바타 로드
-                const avatarsRes = await fetch('/api/avatars');
-                const avatars = await avatarsRes.json();
-                const avatarSelect = document.getElementById('avatarSelect');
-                // '자동 선택' 옵션을 기본값으로 추가
-                let avatarOptions = '<option value="auto" selected>자동 선택 (텍스트 길이 기반)</option>';
-                if (avatars.length > 0) {
-                    avatarOptions += avatars.map(a => `<option value="${a.path}">${a.name}</option>`).join('');
-                }
-                avatarSelect.innerHTML = avatarOptions;
-
                 // TTS 엔진 로드
                 const enginesRes = await fetch('/api/tts_engines');
                 const enginesArray = await enginesRes.json();
@@ -1495,6 +1584,32 @@
                         const suffix = !engine.available ? ' (API 키 필요)' : '';
                         return `<option value="${engine.id}"${disabled}>${engine.name}${suffix}</option>`;
                     }).join('');
+
+                // CosyVoice 연결 테스트 (1회 시도)
+                const cosyvoiceEngine = enginesArray.find(e => e.id === 'cosyvoice');
+                const elevenlabsEngine = enginesArray.find(e => e.id === 'elevenlabs' && e.available);
+
+                if (cosyvoiceEngine && cosyvoiceEngine.available) {
+                    const isConnected = await checkCosyVoiceConnection();
+                    if (!isConnected && elevenlabsEngine) {
+                        console.warn('[TTS] CosyVoice 연결 실패 → ElevenLabs로 자동 전환');
+                        engineSelect.value = 'elevenlabs';
+                    } else if (isConnected) {
+                        engineSelect.value = 'cosyvoice';
+                    } else {
+                        // CosyVoice 실패하고 ElevenLabs도 없으면 첫 번째 가능한 엔진
+                        const firstAvailable = enginesArray.find(e => e.available);
+                        if (firstAvailable) {
+                            engineSelect.value = firstAvailable.id;
+                        }
+                    }
+                } else {
+                    // CosyVoice가 없거나 사용 불가 → 첫 번째 사용 가능한 엔진
+                    const firstAvailable = enginesArray.find(e => e.available);
+                    if (firstAvailable) {
+                        engineSelect.value = firstAvailable.id;
+                    }
+                }
 
                 updateVoiceOptions();
 
@@ -1535,6 +1650,18 @@
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
 
+        // 예시 텍스트 선택
+        function selectExampleText() {
+            const select = document.getElementById('exampleTextSelect');
+            const input = document.getElementById('chatInput');
+            if (select.value) {
+                input.value = select.value;
+                input.focus();
+                // 선택 후 드롭다운 초기화
+                select.selectedIndex = 0;
+            }
+        }
+
         // 메시지 전송
         async function sendMessage() {
             if (isGenerating) return;
@@ -1544,51 +1671,25 @@
 
             if (!message) return;
 
-            const avatarPath = document.getElementById('avatarSelect').value;
-            if (!avatarPath) {
-                alert('아바타를 선택해주세요.');
-                return;
-            }
+            const avatarPath = 'auto';  // 자동 선택
 
-            // 사용자 메시지 표시
-            addMessage('user', message);
+            // 입력된 텍스트를 아바타가 말할 대사로 사용 (LLM 제거됨)
+            addMessage('assistant', message);  // 아바타 대사로 표시
             input.value = '';
 
             isGenerating = true;
             updateUIState(true);
             document.getElementById('progressContainer').style.display = 'block';
             document.getElementById('progressFill').style.width = '0%';
-            document.getElementById('statusText').textContent = 'LLM 응답 생성 중...';
+            document.getElementById('statusText').textContent = '립싱크 생성 중...';
             document.getElementById('elapsedTime').textContent = '';
+            document.getElementById('statLLM').textContent = '-';  // LLM 없음
 
-            // 끄덕 영상 시작 (사용자가 대답 후 대기 중)
-            startNodVideo();
-
-            llmStartTime = Date.now();
+            // 대기 영상 시작
+            startWaitingVideo();
 
             try {
-                // 1. LLM 응답 생성
-                const chatRes = await fetch('/api/chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: message })
-                });
-                const chatData = await chatRes.json();
-
-                if (chatData.error) {
-                    addMessage('system', chatData.error);
-                    isGenerating = false;
-                    updateUIState(false);
-                    return;
-                }
-
-                const llmTime = (Date.now() - llmStartTime) / 1000;
-                document.getElementById('statLLM').textContent = llmTime.toFixed(1);
-
-                // AI 응답 표시
-                addMessage('assistant', chatData.response);
-
-                // 2. 립싱크 생성
+                // 립싱크 생성 (입력 텍스트를 직접 사용)
                 const ttsEngine = document.getElementById('ttsEngineSelect').value;
                 const ttsVoice = document.getElementById('ttsVoiceSelect').value;
                 const resolution = document.getElementById('resolutionSelect').value;
@@ -1612,7 +1713,7 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             avatar_path: avatarPath,
-                            text: chatData.response,
+                            text: message,  // 입력 텍스트 직접 사용
                             tts_engine: ttsEngine,
                             tts_voice: ttsVoice,
                             sid: clientSid,
@@ -1628,7 +1729,7 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             avatar_path: avatarPath,
-                            text: chatData.response,
+                            text: message,  // 입력 텍스트 직접 사용
                             tts_engine: ttsEngine,
                             tts_voice: ttsVoice,
                             sid: clientSid,
@@ -1658,49 +1759,27 @@
         async function startInterview() {
             if (isGenerating) return;
 
-            const avatarPath = document.getElementById('avatarSelect').value;
-            if (!avatarPath) {
-                alert('아바타를 선택해주세요.');
-                return;
-            }
+            const avatarPath = 'auto';  // 자동 선택
 
-            // 대화 초기화
-            await fetch('/api/clear_history', { method: 'POST' });
+            // 대화 초기화 (LLM 제거됨 - UI만 초기화)
             const messagesDiv = document.getElementById('chatMessages');
-            messagesDiv.innerHTML = '<div class="chat-message system">면접이 시작되었습니다.</div>';
+            messagesDiv.innerHTML = '<div class="chat-message system">면접이 시작되었습니다. 아래 입력창에 아바타가 말할 대사를 입력하세요.</div>';
 
             isGenerating = true;
             updateUIState(true);
             document.getElementById('startInterviewBtn').disabled = true;
             document.getElementById('progressContainer').style.display = 'block';
             document.getElementById('progressFill').style.width = '0%';
-            document.getElementById('statusText').textContent = '면접관 준비 중...';
+            document.getElementById('statusText').textContent = '면접관 인사 생성 중...';
             document.getElementById('elapsedTime').textContent = '';
-
-            llmStartTime = Date.now();
+            document.getElementById('statLLM').textContent = '-';  // LLM 없음
 
             try {
-                // 면접관 첫 인사 생성
-                const chatRes = await fetch('/api/chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: '면접을 시작합니다.' })
-                });
-                const chatData = await chatRes.json();
-
-                if (chatData.error) {
-                    addMessage('system', chatData.error);
-                    isGenerating = false;
-                    updateUIState(false);
-                    document.getElementById('startInterviewBtn').disabled = false;
-                    return;
-                }
-
-                const llmTime = (Date.now() - llmStartTime) / 1000;
-                document.getElementById('statLLM').textContent = llmTime.toFixed(1);
+                // 면접관 첫 인사 (고정 메시지)
+                const greetingMessage = '안녕하세요, 면접에 오신 것을 환영합니다. 지원자분의 이야기를 들어볼게요.';
 
                 // 면접관 인사 표시
-                addMessage('assistant', chatData.response);
+                addMessage('assistant', greetingMessage);
 
                 // 립싱크 생성
                 const ttsEngine = document.getElementById('ttsEngineSelect').value;
@@ -1726,7 +1805,7 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             avatar_path: avatarPath,
-                            text: chatData.response,
+                            text: greetingMessage,
                             tts_engine: ttsEngine,
                             tts_voice: ttsVoice,
                             sid: clientSid,
@@ -1742,7 +1821,7 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             avatar_path: avatarPath,
-                            text: chatData.response,
+                            text: greetingMessage,
                             tts_engine: ttsEngine,
                             tts_voice: ttsVoice,
                             sid: clientSid,
@@ -1761,16 +1840,11 @@
             }
         }
 
-        // 대화 초기화
-        async function clearHistory() {
-            try {
-                await fetch('/api/clear_history', { method: 'POST' });
-                const messagesDiv = document.getElementById('chatMessages');
-                messagesDiv.innerHTML = '<div class="chat-message system">"면접 시작" 버튼을 눌러 면접을 시작하세요</div>';
-                document.getElementById('startInterviewBtn').disabled = false;
-            } catch (e) {
-                console.error('Clear failed:', e);
-            }
+        // 대화 초기화 (LLM 제거됨 - UI만 초기화)
+        function clearHistory() {
+            const messagesDiv = document.getElementById('chatMessages');
+            messagesDiv.innerHTML = '<div class="chat-message system">"면접 시작" 버튼을 눌러 면접을 시작하세요</div>';
+            document.getElementById('startInterviewBtn').disabled = false;
         }
 
         // ========== 프롬프트 설정 ==========
@@ -1785,49 +1859,10 @@
             icon.classList.toggle('open');
         }
 
-        async function loadPrompt() {
-            try {
-                const res = await fetch('/api/prompt');
-                const data = await res.json();
-                document.getElementById('promptTextarea').value = data.prompt;
-            } catch (e) {
-                console.error('Failed to load prompt:', e);
-                document.getElementById('promptTextarea').value = DEFAULT_PROMPT;
-            }
-        }
-
-        async function savePrompt() {
-            const prompt = document.getElementById('promptTextarea').value.trim();
-            if (!prompt) {
-                alert('프롬프트를 입력해주세요.');
-                return;
-            }
-
-            try {
-                const res = await fetch('/api/prompt', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ prompt: prompt })
-                });
-                const data = await res.json();
-
-                if (data.success) {
-                    const status = document.getElementById('promptStatus');
-                    status.style.display = 'block';
-                    status.textContent = '프롬프트가 저장되었습니다.';
-                    status.style.color = '#4caf50';
-                    setTimeout(() => { status.style.display = 'none'; }, 3000);
-                }
-            } catch (e) {
-                console.error('Failed to save prompt:', e);
-                alert('프롬프트 저장에 실패했습니다.');
-            }
-        }
-
-        function resetPrompt() {
-            document.getElementById('promptTextarea').value = DEFAULT_PROMPT;
-            savePrompt();
-        }
+        // 프롬프트 관련 함수 (LLM 제거로 비활성화)
+        async function loadPrompt() {}
+        async function savePrompt() {}
+        function resetPrompt() {}
 
         // 초기화
         loadOptions();
@@ -1867,7 +1902,7 @@
             console.log(`[해상도 변경] 컨테이너 크기: ${resolution}`);
 
             // 해상도별 idle 영상 경로
-            const newSrc = `/assets/${resolution}/기본.mp4`;
+            const newSrc = `/assets/${resolution}/idle_long.mp4`;
             console.log(`[해상도 변경] ${resolution} → ${newSrc}`);
 
             // 영상 변경 (현재 재생 시간 유지)
@@ -1886,13 +1921,14 @@
             // 해상도별 영상이 없으면 기본 경로로 폴백
             idleVideo.onerror = () => {
                 console.log(`[해상도 변경] ${resolution} 영상 없음, 기본 경로 사용`);
-                idleVideo.src = '/assets/기본.mp4';
+                idleVideo.src = '/assets/idle_long.mp4';
                 idleVideo.load();
                 idleVideo.onloadeddata = () => {
                     if (wasPlaying) idleVideo.play().catch(() => {});
                 };
             };
         });
+
     </script>
 </body>
 </html>
