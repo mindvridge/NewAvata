@@ -665,9 +665,8 @@
 
         <!-- 탭 네비게이션 -->
         <div class="tab-nav">
-            <button class="tab-btn active" onclick="switchTab('single')">단일 녹화</button>
-            <button class="tab-btn" onclick="switchTab('batch')">대량 녹화</button>
-            <button class="tab-btn" onclick="switchTab('upload')">캐시 업로드</button>
+            <button class="tab-btn active" onclick="switchTab('single')">녹화</button>
+            <button class="tab-btn" onclick="switchTab('uncached')">미캐시 항목</button>
         </div>
 
         <!-- 단일 녹화 탭 -->
@@ -788,167 +787,27 @@
                             아직 생성된 영상이 없습니다
                         </p>
                     </div>
-                </div>
-            </div>
-        </div>
 
-        <!-- 대량 녹화 탭 -->
-        <div id="batchTab" class="tab-content">
-            <div class="main-content">
-                <!-- 왼쪽: 배치 입력 -->
-                <div class="panel">
-                    <h2>대량 텍스트 입력</h2>
-
-                    <div class="settings-row-3">
-                        <div class="form-group">
-                            <label>TTS 엔진</label>
-                            <select id="batchTtsEngineSelect" onchange="updateBatchVoiceOptions()">
-                                <option value="">로딩 중...</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>음성</label>
-                            <select id="batchTtsVoiceSelect">
-                                <option value="">엔진 선택</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>해상도</label>
-                            <select id="batchResolutionSelect">
-                                <option value="720p" selected>720p (고품질)</option>
-                                <option value="480p">480p</option>
-                                <option value="360p">360p</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>포맷</label>
-                            <select id="batchFormatSelect">
-                                <option value="mp4" selected>MP4</option>
-                                <option value="webm">WebM</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>속도</label>
-                            <select id="batchFrameSkipSelect">
-                                <option value="1" selected>고품질</option>
-                                <option value="2">2배속</option>
-                                <option value="3">3배속</option>
-                            </select>
-                        </div>
-                    </div>
-
-                    <div class="form-group">
-                        <label>대사 목록 (한 줄에 하나씩, 빈 줄은 무시)</label>
-                        <textarea id="batchInput" class="batch-input" placeholder="각 줄에 하나의 대사를 입력하세요. 예:
-
-안녕하세요, 반갑습니다.
-오늘 면접에 오신 것을 환영합니다.
-먼저 자기소개 부탁드립니다.
-지원 동기를 말씀해 주세요.
-마지막으로 질문 있으신가요?
-
----
-또는 번호 형식도 가능합니다:
-1. 첫 번째 대사
-2. 두 번째 대사
-3. 세 번째 대사"></textarea>
-                        <div style="display: flex; justify-content: space-between; margin-top: 5px;">
-                            <span class="char-count" id="batchLineCount">0개 항목</span>
-                            <button class="secondary" style="width: auto; padding: 6px 15px; font-size: 0.85em;" onclick="parseBatchInput()">
-                                📋 항목 확인
-                            </button>
-                        </div>
-                    </div>
-
-                    <div class="settings-row">
-                        <button class="primary" id="batchStartBtn" onclick="startBatchRecording()">
-                            🚀 대량 녹화 시작
-                        </button>
-                        <button class="danger secondary" id="batchStopBtn" onclick="stopBatchRecording()" disabled>
-                            ⏹ 중지
-                        </button>
-                    </div>
-
-                    <div class="tips">
-                        <h3>💡 대량 녹화 팁</h3>
-                        <ul>
-                            <li>한 줄에 하나의 대사를 입력하세요</li>
-                            <li>빈 줄과 "---" 구분선은 자동으로 무시됩니다</li>
-                            <li>"1. ", "2) " 등 번호 접두사는 자동 제거됩니다</li>
-                            <li>순차적으로 처리되며, 완료된 영상은 바로 다운로드 가능합니다</li>
-                            <li>중지 버튼을 누르면 현재 작업 완료 후 중지됩니다</li>
-                        </ul>
-                    </div>
-
-                    <div class="tips" style="margin-top: 10px; background: rgba(17, 153, 142, 0.1); border-color: rgba(17, 153, 142, 0.3);">
-                        <h3 style="color: #11998e;">📁 파일 관리</h3>
-                        <ul>
-                            <li>파일명: 대사 앞 10글자 + 고유ID (예: 안녕하세요_a1b2c3d4.mp4)</li>
-                            <li>JSON 파일: 동일 이름의 .json 파일에 대사 전체 저장</li>
-                            <li>MP4 메타데이터: title/comment/description에도 저장</li>
-                            <li>JSON 내용: text, created_at, resolution, duration 등</li>
-                        </ul>
-                    </div>
-                </div>
-
-                <!-- 오른쪽: 배치 진행 상황 -->
-                <div class="panel">
-                    <h2>진행 상황</h2>
-
-                    <div class="batch-progress" id="batchProgress">
-                        <div class="batch-progress-header">
-                            <span class="batch-progress-title">대량 녹화 진행 중</span>
-                            <span class="batch-progress-count" id="batchProgressCount">0 / 0</span>
-                        </div>
-                        <div class="batch-progress-bar">
-                            <div class="batch-progress-fill" id="batchProgressFill"></div>
-                        </div>
-                        <div class="batch-progress-status" id="batchProgressStatus">준비 중...</div>
-                    </div>
-
-                    <div class="batch-list" id="batchList">
-                        <p style="color: #888; text-align: center; padding: 20px;">
-                            대사를 입력하고 "항목 확인" 버튼을 눌러주세요
+                    <!-- 캐시 업로드 섹션 -->
+                    <h2 style="margin-top: 20px;">📤 캐시에 업로드</h2>
+                    <div class="tips" style="margin-bottom: 15px; background: rgba(0, 210, 255, 0.05); border-color: rgba(0, 210, 255, 0.2);">
+                        <p style="color: #aaa; font-size: 0.9em; margin: 0;">
+                            생성된 영상을 서버 캐시에 업로드하여 빠르게 재사용할 수 있습니다.
                         </p>
                     </div>
 
-                    <button class="download-all-btn primary" id="downloadAllBtn" onclick="downloadAllVideos()" style="display: none;">
-                        📦 전체 다운로드 (ZIP)
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <!-- 캐시 업로드 탭 -->
-        <div id="uploadTab" class="tab-content">
-            <div class="main-content">
-                <!-- 왼쪽: 업로드 폼 -->
-                <div class="panel">
-                    <h2>비디오 캐시 업로드</h2>
-                    <p style="color: #888; margin-bottom: 15px;">생성된 영상을 서버 캐시에 업로드하여 빠르게 재사용할 수 있습니다.</p>
-
                     <div class="form-group">
-                        <label>API 키 <span style="color: #ff6b6b;">*</span></label>
-                        <input type="password" id="uploadApiKey" placeholder="API 키를 입력하세요">
-                        <div style="font-size: 0.8em; color: #888; margin-top: 4px;">
-                            로컬 스토리지에 저장되어 다음 방문 시 자동 입력됩니다
-                        </div>
+                        <label>캐시할 텍스트</label>
+                        <input type="text" id="uploadText" placeholder="이 영상에 해당하는 대사 (캐시 키 생성용)">
                     </div>
 
                     <div class="form-group">
-                        <label>대사 텍스트 <span style="color: #ff6b6b;">*</span></label>
-                        <textarea id="uploadText" placeholder="이 영상에 해당하는 대사를 입력하세요 (캐시 키 생성용)"></textarea>
-                        <div class="char-count" id="uploadCharCount">0자</div>
-                    </div>
-
-                    <div class="form-group">
-                        <label>비디오 파일 <span style="color: #ff6b6b;">*</span></label>
+                        <label>비디오 파일</label>
                         <div class="file-upload-area" id="fileUploadArea">
                             <input type="file" id="uploadVideoFile" accept="video/mp4,video/webm" style="display: none;" onchange="handleFileSelect(event)">
-                            <div class="file-drop-zone" id="fileDropZone" onclick="document.getElementById('uploadVideoFile').click()">
-                                <div class="file-icon">📁</div>
-                                <div class="file-text">클릭하거나 파일을 드래그하여 업로드</div>
-                                <div class="file-info">MP4 또는 WebM (최대 100MB)</div>
+                            <div class="file-drop-zone" id="fileDropZone" onclick="document.getElementById('uploadVideoFile').click()" style="padding: 20px 15px;">
+                                <div class="file-text" style="font-size: 0.95em;">클릭하거나 파일 드래그</div>
+                                <div class="file-info" style="font-size: 0.8em;">MP4/WebM (최대 100MB)</div>
                             </div>
                             <div class="selected-file" id="selectedFile" style="display: none;">
                                 <span class="file-name" id="selectedFileName"></span>
@@ -958,17 +817,18 @@
                         </div>
                     </div>
 
-                    <div class="form-group">
-                        <label>소스 유형</label>
-                        <select id="uploadSource">
-                            <option value="lipsync" selected>Lipsync (기본)</option>
-                            <option value="heygen">HeyGen</option>
-                        </select>
+                    <div class="settings-row">
+                        <div class="form-group">
+                            <label>소스 유형</label>
+                            <select id="uploadSource">
+                                <option value="lipsync" selected>Lipsync</option>
+                                <option value="heygen">HeyGen</option>
+                            </select>
+                        </div>
+                        <button class="primary" id="uploadBtn" onclick="uploadVideoToCache()" style="margin-top: 22px;">
+                            📤 업로드
+                        </button>
                     </div>
-
-                    <button class="primary" id="uploadBtn" onclick="uploadVideoToCache()">
-                        📤 캐시에 업로드
-                    </button>
 
                     <div class="progress-container" id="uploadProgressContainer">
                         <div class="progress-bar">
@@ -979,57 +839,125 @@
                             <span id="uploadProgressPercent"></span>
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 미캐시 항목 탭 -->
+        <div id="uncachedTab" class="tab-content">
+            <div class="main-content">
+                <!-- 왼쪽: 필터 및 조회 -->
+                <div class="panel">
+                    <h2>미캐시 항목 조회</h2>
+                    <p style="color: #888; margin-bottom: 15px;">아직 캐시되지 않은 텍스트 항목을 조회하고 녹화할 수 있습니다.</p>
+
+                    <div class="settings-row">
+                        <div class="form-group">
+                            <label>소스 유형</label>
+                            <select id="uncachedSource">
+                                <option value="lipsync" selected>Lipsync</option>
+                                <option value="heygen">HeyGen</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>기관 유형</label>
+                            <select id="uncachedOrgType">
+                                <option value="">전체</option>
+                                <option value="company">기업</option>
+                                <option value="public">공공기관</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="settings-row">
+                        <div class="form-group">
+                            <label>직무명</label>
+                            <input type="text" id="uncachedJobName" placeholder="예: 개발자, 마케팅">
+                        </div>
+                        <div class="form-group" style="display: flex; align-items: flex-end; padding-bottom: 4px;">
+                            <label style="display: flex; align-items: center; cursor: pointer;">
+                                <input type="checkbox" id="uncachedIncludeStandard" checked style="width: auto; margin-right: 8px;">
+                                표준 질문 포함
+                            </label>
+                        </div>
+                    </div>
+
+                    <button class="primary" id="queryUncachedBtn" onclick="queryUncachedItems()">
+                        🔍 미캐시 항목 조회
+                    </button>
 
                     <div class="tips" style="margin-top: 15px;">
-                        <h3>💡 캐시 업로드 안내</h3>
-                        <ul>
-                            <li>업로드된 영상은 텍스트 기반 캐시 키로 저장됩니다</li>
-                            <li>동일한 텍스트로 요청 시 캐시된 영상이 반환됩니다</li>
-                            <li>MP4, WebM 형식 지원 (최대 100MB)</li>
-                            <li>업로드 후 반환된 URL로 영상에 접근할 수 있습니다</li>
-                        </ul>
+                        <h3>💡 녹화 설정</h3>
+                    </div>
+
+                    <div class="settings-row-3" style="margin-top: 10px;">
+                        <div class="form-group">
+                            <label>TTS 엔진</label>
+                            <select id="uncachedTtsEngine" onchange="updateUncachedVoiceOptions()">
+                                <option value="">로딩 중...</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>음성</label>
+                            <select id="uncachedTtsVoice">
+                                <option value="">엔진 선택</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>해상도</label>
+                            <select id="uncachedResolution">
+                                <option value="720p" selected>720p</option>
+                                <option value="480p">480p</option>
+                                <option value="360p">360p</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="batch-progress" id="uncachedBatchProgress">
+                        <div class="batch-progress-header">
+                            <span class="batch-progress-title">녹화 진행 중</span>
+                            <span class="batch-progress-count" id="uncachedProgressCount">0 / 0</span>
+                        </div>
+                        <div class="batch-progress-bar">
+                            <div class="batch-progress-fill" id="uncachedProgressFill"></div>
+                        </div>
+                        <div class="batch-progress-status" id="uncachedProgressStatus">준비 중...</div>
                     </div>
                 </div>
 
-                <!-- 오른쪽: 업로드 결과 -->
+                <!-- 오른쪽: 미캐시 항목 목록 -->
                 <div class="panel">
-                    <h2>업로드 결과</h2>
-
-                    <div id="uploadResultEmpty" style="color: #888; text-align: center; padding: 40px;">
-                        아직 업로드된 영상이 없습니다
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <h2 style="margin: 0;">미캐시 항목 목록</h2>
+                        <span id="uncachedCount" style="color: #888; font-size: 0.9em;">0개</span>
                     </div>
 
-                    <div id="uploadResult" style="display: none;">
-                        <div class="result-card">
-                            <div class="result-item">
-                                <span class="result-label">상태</span>
-                                <span class="result-value" id="resultStatus">-</span>
-                            </div>
-                            <div class="result-item">
-                                <span class="result-label">캐시 키</span>
-                                <span class="result-value" id="resultCacheKey" style="font-family: monospace; word-break: break-all;">-</span>
-                            </div>
-                            <div class="result-item">
-                                <span class="result-label">소스</span>
-                                <span class="result-value" id="resultSource">-</span>
-                            </div>
-                            <div class="result-item">
-                                <span class="result-label">비디오 URL</span>
-                                <a class="result-value result-link" id="resultVideoUrl" href="#" target="_blank">-</a>
-                            </div>
-                        </div>
+                    <div id="uncachedListEmpty" style="color: #888; text-align: center; padding: 40px;">
+                        조회 버튼을 클릭하여 미캐시 항목을 불러오세요
+                    </div>
 
-                        <div style="display: flex; gap: 10px; margin-top: 15px;">
-                            <button class="secondary" onclick="copyUploadedUrl()">🔗 URL 복사</button>
-                            <button class="btn-play secondary" onclick="previewUploadedVideo()">▶ 미리보기</button>
+                    <div class="batch-list" id="uncachedList" style="max-height: 500px; display: none;">
+                    </div>
+
+                    <div id="uncachedActions" style="display: none; margin-top: 15px;">
+                        <div class="settings-row">
+                            <button class="primary" id="recordAllBtn" onclick="recordAllUncached()">
+                                🚀 전체 녹화 시작
+                            </button>
+                            <button class="danger secondary" id="stopRecordingBtn" onclick="stopUncachedRecording()" disabled>
+                                ⏹ 중지
+                            </button>
                         </div>
                     </div>
 
-                    <h2 style="margin-top: 25px;">업로드 기록</h2>
-                    <div class="video-list" id="uploadHistory">
-                        <p style="color: #888; text-align: center; padding: 15px;">
-                            업로드 기록이 없습니다
-                        </p>
+                    <div class="tips" style="margin-top: 15px; background: rgba(17, 153, 142, 0.1); border-color: rgba(17, 153, 142, 0.3);">
+                        <h3 style="color: #11998e;">📁 자동 캐시 업로드</h3>
+                        <ul>
+                            <li>녹화 완료 후 자동으로 캐시 서버에 업로드됩니다</li>
+                            <li>개별 항목의 "녹화" 버튼으로 단건 녹화 가능</li>
+                            <li>"전체 녹화"로 모든 미캐시 항목 일괄 처리</li>
+                            <li>중지 버튼 클릭 시 현재 작업 완료 후 중지</li>
+                        </ul>
                     </div>
                 </div>
             </div>
@@ -1045,17 +973,20 @@
         let generatedVideos = [];
         let isLooping = false;  // 반복 재생 상태
 
-        // 배치 관련 변수
-        let batchItems = [];
-        let batchCurrentIndex = 0;
-        let batchRunning = false;
-        let batchResults = [];
+        // 미캐시 녹화 관련 변수
+        let uncachedItems = [];
+        let uncachedCurrentIndex = 0;
+        let uncachedRunning = false;
+        let uncachedResults = [];
+        let uncachedBatchMode = false;  // 배치 모드 여부 (중지 후에도 유지)
 
         // 초기화
         document.addEventListener('DOMContentLoaded', function() {
             initSocket();
             loadOptions();
             setupTextareas();
+            initUncachedTab();
+            initUploadSection();
         });
 
         // 탭 전환
@@ -1081,8 +1012,8 @@
             });
 
             socket.on('queue_update', (data) => {
-                if (batchRunning) {
-                    updateBatchItemStatus(batchCurrentIndex, 'processing', data.message);
+                if (uncachedRunning) {
+                    updateUncachedItemStatus(uncachedCurrentIndex, 'processing', data.message);
                 } else {
                     document.getElementById('queueStatus').style.display = 'flex';
                     document.getElementById('queueMessage').textContent = data.message;
@@ -1090,10 +1021,10 @@
             });
 
             socket.on('status', (data) => {
-                if (batchRunning) {
-                    updateBatchItemStatus(batchCurrentIndex, 'processing', data.message);
-                    document.getElementById('batchProgressStatus').textContent =
-                        `[${batchCurrentIndex + 1}/${batchItems.length}] ${data.message}`;
+                if (uncachedRunning) {
+                    updateUncachedItemStatus(uncachedCurrentIndex, 'processing', data.message);
+                    document.getElementById('uncachedProgressStatus').textContent =
+                        `[${uncachedCurrentIndex + 1}/${uncachedItems.length}] ${data.message}`;
                 } else {
                     document.getElementById('progressContainer').style.display = 'block';
                     document.getElementById('queueStatus').style.display = 'none';
@@ -1105,25 +1036,44 @@
                 }
             });
 
-            socket.on('complete', (data) => {
+            socket.on('complete', async (data) => {
                 console.log('생성 완료:', data);
 
-                if (batchRunning) {
-                    // 배치 모드
-                    batchResults[batchCurrentIndex] = {
+                if (uncachedBatchMode) {
+                    // 미캐시 녹화 모드 (배치 진행 중이거나 중지된 상태)
+                    uncachedResults[uncachedCurrentIndex] = {
                         url: data.video_url,
                         success: true
                     };
-                    updateBatchItemStatus(batchCurrentIndex, 'completed', '완료', data.video_url);
+                    updateUncachedItemStatus(uncachedCurrentIndex, 'completed', '녹화 완료, 업로드 중...', data.video_url);
+                    document.getElementById('uncachedProgressStatus').textContent =
+                        `[${uncachedCurrentIndex + 1}/${uncachedItems.length}] 캐시 업로드 중...`;
+
+                    // 캐시에 업로드 (완료 대기)
+                    const uploadResult = await uploadToCache(uncachedItems[uncachedCurrentIndex].text, data.video_url);
+
+                    if (!uploadResult.success) {
+                        // 업로드 실패 - 배치 중지
+                        uncachedResults[uncachedCurrentIndex].success = false;
+                        uncachedResults[uncachedCurrentIndex].error = uploadResult.error;
+                        updateUncachedItemStatus(uncachedCurrentIndex, 'error', '업로드 실패: ' + uploadResult.error);
+                        document.getElementById('uncachedProgressStatus').textContent =
+                            `업로드 실패! ${uploadResult.error}`;
+                        finishUncachedRecording();
+                        return;
+                    }
+
+                    // 업로드 성공 - 상태 업데이트
+                    updateUncachedItemStatus(uncachedCurrentIndex, 'completed', '완료 (캐시됨)', data.video_url);
 
                     // 다음 항목 처리
-                    batchCurrentIndex++;
-                    updateBatchProgress();
+                    uncachedCurrentIndex++;
+                    updateUncachedProgress();
 
-                    if (batchCurrentIndex < batchItems.length && batchRunning) {
-                        setTimeout(() => processNextBatchItem(), 500);
+                    if (uncachedCurrentIndex < uncachedItems.length && uncachedRunning) {
+                        setTimeout(() => processNextUncachedItem(), 500);
                     } else {
-                        finishBatchRecording();
+                        finishUncachedRecording();
                     }
                 } else {
                     // 단일 모드
@@ -1152,20 +1102,21 @@
             socket.on('error', (data) => {
                 console.error('오류:', data);
 
-                if (batchRunning) {
-                    batchResults[batchCurrentIndex] = {
+                if (uncachedBatchMode) {
+                    // 미캐시 녹화 모드 (배치 진행 중이거나 중지된 상태)
+                    uncachedResults[uncachedCurrentIndex] = {
                         success: false,
                         error: data.message
                     };
-                    updateBatchItemStatus(batchCurrentIndex, 'error', '오류: ' + data.message);
+                    updateUncachedItemStatus(uncachedCurrentIndex, 'error', '오류: ' + data.message);
 
-                    batchCurrentIndex++;
-                    updateBatchProgress();
+                    uncachedCurrentIndex++;
+                    updateUncachedProgress();
 
-                    if (batchCurrentIndex < batchItems.length && batchRunning) {
-                        setTimeout(() => processNextBatchItem(), 500);
+                    if (uncachedCurrentIndex < uncachedItems.length && uncachedRunning) {
+                        setTimeout(() => processNextUncachedItem(), 500);
                     } else {
-                        finishBatchRecording();
+                        finishUncachedRecording();
                     }
                 } else {
                     document.getElementById('statusText').textContent = '오류: ' + data.message;
@@ -1230,10 +1181,10 @@
                 ).join('');
 
                 document.getElementById('ttsEngineSelect').innerHTML = engineOptions;
-                document.getElementById('batchTtsEngineSelect').innerHTML = engineOptions;
+                document.getElementById('uncachedTtsEngine').innerHTML = engineOptions;
 
                 updateVoiceOptions();
-                updateBatchVoiceOptions();
+                updateUncachedVoiceOptions();
 
             } catch (error) {
                 console.error('옵션 로드 오류:', error);
@@ -1247,9 +1198,9 @@
             updateVoiceSelect(engineId, voiceSelect);
         }
 
-        function updateBatchVoiceOptions() {
-            const engineId = document.getElementById('batchTtsEngineSelect').value;
-            const voiceSelect = document.getElementById('batchTtsVoiceSelect');
+        function updateUncachedVoiceOptions() {
+            const engineId = document.getElementById('uncachedTtsEngine').value;
+            const voiceSelect = document.getElementById('uncachedTtsVoice');
             updateVoiceSelect(engineId, voiceSelect);
         }
 
@@ -1281,50 +1232,6 @@
                 charCount.textContent = `${len} / 1000자`;
                 charCount.className = len > 1000 ? 'char-count warning' : 'char-count';
             });
-
-            const batchInput = document.getElementById('batchInput');
-            batchInput.addEventListener('input', () => {
-                const lines = parseBatchText(batchInput.value);
-                document.getElementById('batchLineCount').textContent = `${lines.length}개 항목`;
-            });
-        }
-
-        // 배치 텍스트 파싱
-        function parseBatchText(text) {
-            return text.split('\n')
-                .map(line => line.trim())
-                .filter(line => line && line !== '---' && !line.match(/^-+$/))
-                .map(line => {
-                    // 번호 접두사 제거 (1. , 1) , 1: , (1) 등)
-                    return line.replace(/^[\d]+[\.\)\:\-]\s*/, '').replace(/^\([\d]+\)\s*/, '').trim();
-                })
-                .filter(line => line.length > 0);
-        }
-
-        // 배치 입력 파싱 및 미리보기
-        function parseBatchInput() {
-            const text = document.getElementById('batchInput').value;
-            batchItems = parseBatchText(text);
-
-            const batchList = document.getElementById('batchList');
-
-            if (batchItems.length === 0) {
-                batchList.innerHTML = '<p style="color: #888; text-align: center; padding: 20px;">입력된 항목이 없습니다</p>';
-                return;
-            }
-
-            batchList.innerHTML = batchItems.map((item, index) => `
-                <div class="batch-item" id="batchItem${index}">
-                    <div class="number">${index + 1}</div>
-                    <div class="info">
-                        <div class="text">${escapeHtml(item)}</div>
-                        <div class="meta" id="batchMeta${index}">대기 중</div>
-                    </div>
-                    <div class="actions" id="batchActions${index}"></div>
-                </div>
-            `).join('');
-
-            document.getElementById('batchLineCount').textContent = `${batchItems.length}개 항목`;
         }
 
         // HTML 이스케이프
@@ -1334,51 +1241,159 @@
             return div.innerHTML;
         }
 
-        // 배치 녹화 시작
-        async function startBatchRecording() {
-            if (batchItems.length === 0) {
-                parseBatchInput();
-                if (batchItems.length === 0) {
-                    alert('녹화할 항목을 입력해주세요.');
-                    return;
+        // ========== 미캐시 항목 기능 ==========
+
+        // 미캐시 탭 초기화
+        function initUncachedTab() {
+            // 초기화 (API 키는 서버 프록시에서 처리)
+        }
+
+        // 미캐시 항목 조회
+        async function queryUncachedItems() {
+            const source = document.getElementById('uncachedSource').value;
+            const orgType = document.getElementById('uncachedOrgType').value;
+            const jobName = document.getElementById('uncachedJobName').value.trim();
+            const includeStandard = document.getElementById('uncachedIncludeStandard').checked;
+
+            // URL 파라미터 구성
+            const params = new URLSearchParams();
+            params.append('source', source);
+            if (orgType) params.append('org_type', orgType);
+            if (jobName) params.append('job_name', jobName);
+            params.append('include_standard', includeStandard);
+
+            document.getElementById('queryUncachedBtn').disabled = true;
+            document.getElementById('queryUncachedBtn').textContent = '조회 중...';
+
+            try {
+                // 로컬 프록시 사용 (CORS 우회)
+                const response = await fetch(`/api/proxy/video-cache/uncached?${params.toString()}`);
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(result.error || `HTTP ${response.status}`);
                 }
+
+                // API 응답: { uncached: [...], uncached_count: N, cached_count: N }
+                uncachedItems = result.uncached || [];
+                console.log(`미캐시 ${result.uncached_count || uncachedItems.length}개, 캐시됨 ${result.cached_count || 0}개`);
+                renderUncachedList();
+
+            } catch (error) {
+                console.error('미캐시 항목 조회 오류:', error);
+                alert('조회 실패: ' + error.message);
+            } finally {
+                document.getElementById('queryUncachedBtn').disabled = false;
+                document.getElementById('queryUncachedBtn').textContent = '🔍 미캐시 항목 조회';
             }
-
-            batchRunning = true;
-            batchCurrentIndex = 0;
-            batchResults = new Array(batchItems.length).fill(null);
-
-            document.getElementById('batchStartBtn').disabled = true;
-            document.getElementById('batchStopBtn').disabled = false;
-            document.getElementById('batchProgress').classList.add('active');
-            document.getElementById('downloadAllBtn').style.display = 'none';
-
-            updateBatchProgress();
-            processNextBatchItem();
         }
 
-        // 배치 녹화 중지
-        function stopBatchRecording() {
-            batchRunning = false;
-            document.getElementById('batchStopBtn').disabled = true;
-            document.getElementById('batchProgressStatus').textContent = '중지 요청됨... 현재 작업 완료 후 중지됩니다.';
-        }
+        // 미캐시 항목 목록 렌더링
+        function renderUncachedList() {
+            const listEl = document.getElementById('uncachedList');
+            const emptyEl = document.getElementById('uncachedListEmpty');
+            const actionsEl = document.getElementById('uncachedActions');
+            const countEl = document.getElementById('uncachedCount');
 
-        // 다음 배치 항목 처리
-        async function processNextBatchItem() {
-            if (!batchRunning || batchCurrentIndex >= batchItems.length) {
+            countEl.textContent = `${uncachedItems.length}개`;
+
+            if (uncachedItems.length === 0) {
+                listEl.style.display = 'none';
+                emptyEl.style.display = 'block';
+                emptyEl.innerHTML = '<p style="color: #4caf50; text-align: center; padding: 40px;">🎉 모든 항목이 캐시되어 있습니다!</p>';
+                actionsEl.style.display = 'none';
                 return;
             }
 
-            const text = batchItems[batchCurrentIndex];
-            const avatarPath = 'auto';  // 자동 선택
-            const ttsEngine = document.getElementById('batchTtsEngineSelect').value;
-            const ttsVoice = document.getElementById('batchTtsVoiceSelect').value;
-            const resolution = document.getElementById('batchResolutionSelect').value;
-            const outputFormat = document.getElementById('batchFormatSelect').value;
-            const frameSkip = parseInt(document.getElementById('batchFrameSkipSelect').value);
+            emptyEl.style.display = 'none';
+            listEl.style.display = 'block';
+            actionsEl.style.display = 'block';
 
-            updateBatchItemStatus(batchCurrentIndex, 'processing', '요청 중...');
+            listEl.innerHTML = uncachedItems.map((item, index) => `
+                <div class="batch-item" id="uncachedItem${index}">
+                    <div class="number">${index + 1}</div>
+                    <div class="info">
+                        <div class="text">${escapeHtml(item.text)}</div>
+                        <div class="meta" id="uncachedMeta${index}">${item.category || ''} ${item.job_name ? '• ' + item.job_name : ''}</div>
+                    </div>
+                    <div class="actions" id="uncachedActions${index}">
+                        <button class="primary" style="width:auto;padding:6px 12px;font-size:0.8em;" onclick="recordSingleUncached(${index})">녹화</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // 단일 미캐시 항목 녹화
+        async function recordSingleUncached(index) {
+            const item = uncachedItems[index];
+            if (!item) return;
+
+            // 해당 항목만 녹화 (자동 진행 없음)
+            uncachedRunning = false;  // 자동 진행 비활성화
+            uncachedBatchMode = true;  // 업로드 로직 사용
+            uncachedCurrentIndex = index;
+            uncachedResults = new Array(uncachedItems.length).fill(null);
+
+            updateUncachedItemStatus(index, 'processing', '녹화 중...');
+
+            await processUncachedItem(index);
+        }
+
+        // 전체 미캐시 항목 녹화 시작
+        async function recordAllUncached() {
+            if (uncachedItems.length === 0) {
+                alert('녹화할 항목이 없습니다.');
+                return;
+            }
+
+            uncachedRunning = true;
+            uncachedBatchMode = true;  // 배치 모드 활성화
+            uncachedCurrentIndex = 0;
+            uncachedResults = new Array(uncachedItems.length).fill(null);
+
+            document.getElementById('recordAllBtn').disabled = true;
+            document.getElementById('stopRecordingBtn').disabled = false;
+            document.getElementById('uncachedBatchProgress').classList.add('active');
+
+            // 모든 항목 대기 상태로 초기화
+            uncachedItems.forEach((item, index) => {
+                updateUncachedItemStatus(index, '', '대기 중');
+            });
+
+            updateUncachedProgress();
+            processNextUncachedItem();
+        }
+
+        // 미캐시 녹화 중지
+        function stopUncachedRecording() {
+            uncachedRunning = false;
+            document.getElementById('stopRecordingBtn').disabled = true;
+            document.getElementById('uncachedProgressStatus').textContent = '중지 요청됨... 현재 작업 완료 후 중지됩니다.';
+        }
+
+        // 다음 미캐시 항목 처리
+        async function processNextUncachedItem() {
+            if (!uncachedRunning || uncachedCurrentIndex >= uncachedItems.length) {
+                // 중지되었거나 완료된 경우
+                if (uncachedBatchMode) {
+                    finishUncachedRecording();
+                }
+                return;
+            }
+            await processUncachedItem(uncachedCurrentIndex);
+        }
+
+        // 미캐시 항목 처리
+        async function processUncachedItem(index) {
+            const item = uncachedItems[index];
+            const text = item.text;
+            const avatarPath = 'auto';
+            const ttsEngine = document.getElementById('uncachedTtsEngine').value;
+            const ttsVoice = document.getElementById('uncachedTtsVoice').value;
+            const resolution = document.getElementById('uncachedResolution').value;
+
+            updateUncachedItemStatus(index, 'processing', '요청 중...');
 
             try {
                 const response = await fetch('/api/record', {
@@ -1390,9 +1405,9 @@
                         tts_engine: ttsEngine,
                         tts_voice: ttsVoice,
                         resolution: resolution,
-                        output_format: outputFormat,
-                        frame_skip: frameSkip,
-                        filename: `batch_${String(batchCurrentIndex + 1).padStart(3, '0')}`,
+                        output_format: 'mp4',
+                        frame_skip: 1,
+                        filename: `uncached_${String(index + 1).padStart(3, '0')}`,
                         sid: clientSid
                     })
                 });
@@ -1404,100 +1419,154 @@
                 }
 
             } catch (error) {
-                console.error('배치 항목 처리 오류:', error);
-                batchResults[batchCurrentIndex] = {
+                console.error('미캐시 항목 처리 오류:', error);
+                uncachedResults[index] = {
                     success: false,
                     error: error.message
                 };
-                updateBatchItemStatus(batchCurrentIndex, 'error', '오류: ' + error.message);
+                updateUncachedItemStatus(index, 'error', '오류: ' + error.message);
 
-                batchCurrentIndex++;
-                updateBatchProgress();
+                if (uncachedBatchMode) {
+                    uncachedCurrentIndex++;
+                    updateUncachedProgress();
 
-                if (batchCurrentIndex < batchItems.length && batchRunning) {
-                    setTimeout(() => processNextBatchItem(), 500);
-                } else {
-                    finishBatchRecording();
+                    if (uncachedCurrentIndex < uncachedItems.length && uncachedRunning) {
+                        setTimeout(() => processNextUncachedItem(), 500);
+                    } else {
+                        finishUncachedRecording();
+                    }
                 }
             }
         }
 
-        // 배치 항목 상태 업데이트
-        function updateBatchItemStatus(index, status, message, videoUrl = null) {
-            const item = document.getElementById(`batchItem${index}`);
-            const meta = document.getElementById(`batchMeta${index}`);
-            const actions = document.getElementById(`batchActions${index}`);
+        // 미캐시 항목 상태 업데이트
+        function updateUncachedItemStatus(index, status, message, videoUrl = null) {
+            const item = document.getElementById(`uncachedItem${index}`);
+            const meta = document.getElementById(`uncachedMeta${index}`);
+            const actions = document.getElementById(`uncachedActions${index}`);
 
             if (!item) return;
 
             item.className = `batch-item ${status}`;
-            meta.textContent = message;
+            if (message) {
+                const originalMeta = uncachedItems[index];
+                const categoryInfo = originalMeta.category || '';
+                const jobInfo = originalMeta.job_name ? '• ' + originalMeta.job_name : '';
+                meta.textContent = status ? message : `${categoryInfo} ${jobInfo}`;
+            }
 
             if (status === 'completed' && videoUrl) {
                 actions.innerHTML = `
-                    <button class="btn-play" onclick="playBatchVideo('${videoUrl}')">▶</button>
-                    <button class="btn-download" onclick="downloadVideoUrl('${videoUrl}')">📥</button>
+                    <button class="btn-play" onclick="playUncachedVideo('${videoUrl}')">▶</button>
+                    <span style="color: #4caf50; font-size: 0.8em;">✓ 캐시됨</span>
+                `;
+            } else if (status === 'error') {
+                actions.innerHTML = `
+                    <button class="primary" style="width:auto;padding:6px 12px;font-size:0.8em;" onclick="recordSingleUncached(${index})">재시도</button>
+                `;
+            } else if (!status) {
+                actions.innerHTML = `
+                    <button class="primary" style="width:auto;padding:6px 12px;font-size:0.8em;" onclick="recordSingleUncached(${index})">녹화</button>
                 `;
             }
         }
 
-        // 배치 진행률 업데이트
-        function updateBatchProgress() {
-            const completed = batchResults.filter(r => r !== null).length;
-            const total = batchItems.length;
+        // 미캐시 진행률 업데이트
+        function updateUncachedProgress() {
+            const completed = uncachedResults.filter(r => r !== null).length;
+            const total = uncachedItems.length;
             const percent = total > 0 ? (completed / total * 100) : 0;
 
-            document.getElementById('batchProgressCount').textContent = `${completed} / ${total}`;
-            document.getElementById('batchProgressFill').style.width = `${percent}%`;
+            document.getElementById('uncachedProgressCount').textContent = `${completed} / ${total}`;
+            document.getElementById('uncachedProgressFill').style.width = `${percent}%`;
         }
 
-        // 배치 녹화 완료
-        function finishBatchRecording() {
-            batchRunning = false;
+        // 미캐시 녹화 완료
+        function finishUncachedRecording() {
+            uncachedRunning = false;
+            uncachedBatchMode = false;  // 배치 모드 해제
 
-            document.getElementById('batchStartBtn').disabled = false;
-            document.getElementById('batchStopBtn').disabled = true;
+            document.getElementById('recordAllBtn').disabled = false;
+            document.getElementById('stopRecordingBtn').disabled = true;
 
-            const successCount = batchResults.filter(r => r && r.success).length;
-            const errorCount = batchResults.filter(r => r && !r.success).length;
+            const successCount = uncachedResults.filter(r => r && r.success).length;
+            const errorCount = uncachedResults.filter(r => r && !r.success).length;
 
-            document.getElementById('batchProgressStatus').textContent =
+            document.getElementById('uncachedProgressStatus').textContent =
                 `완료! 성공: ${successCount}개, 실패: ${errorCount}개`;
-
-            if (successCount > 0) {
-                document.getElementById('downloadAllBtn').style.display = 'block';
-            }
         }
 
-        // 배치 비디오 재생
-        function playBatchVideo(url) {
+        // 미캐시 비디오 재생
+        function playUncachedVideo(url) {
+            // 전체 URL인 경우 상대 경로로 변환 (CORS 우회)
+            let localUrl = url;
+            if (url.includes('://')) {
+                const urlObj = new URL(url);
+                localUrl = urlObj.pathname;  // /video/xxx.mp4
+            }
+
             const previewVideo = document.getElementById('previewVideo');
-            previewVideo.src = url + '?' + Date.now();
+            previewVideo.src = localUrl + '?' + Date.now();
             previewVideo.load();
             previewVideo.play();
 
-            // 단일 탭으로 전환
+            // 녹화 탭으로 전환
             switchTab('single');
-            currentVideoUrl = url;
+            currentVideoUrl = localUrl;
             document.getElementById('downloadBtn').disabled = false;
             document.getElementById('copyUrlBtn').disabled = false;
         }
 
-        // 전체 다운로드 (개별 파일)
-        function downloadAllVideos() {
-            const successResults = batchResults.filter(r => r && r.success);
+        // 캐시 서버에 업로드 (성공/실패 반환)
+        async function uploadToCache(text, videoUrl) {
+            const source = document.getElementById('uncachedSource').value;
 
-            if (successResults.length === 0) {
-                alert('다운로드할 영상이 없습니다.');
-                return;
+            try {
+                // LIPSYNC_BASE_URL이 설정된 경우 전체 URL이 반환됨
+                // 로컬에서 fetch하려면 상대 경로로 변환 필요
+                let localVideoUrl = videoUrl;
+                if (videoUrl.includes('://')) {
+                    // 전체 URL인 경우 /video/... 부분만 추출
+                    const urlObj = new URL(videoUrl);
+                    localVideoUrl = urlObj.pathname;  // /video/xxx.mp4
+                }
+
+                console.log(`캐시 업로드 시작: ${text.substring(0, 20)}... → ${localVideoUrl}`);
+
+                // 비디오 파일 다운로드 (로컬 서버에서)
+                const videoResponse = await fetch(localVideoUrl);
+                if (!videoResponse.ok) {
+                    throw new Error(`비디오 다운로드 실패: ${videoResponse.status}`);
+                }
+                const videoBlob = await videoResponse.blob();
+                console.log(`비디오 다운로드 완료: ${videoBlob.size} bytes`);
+
+                // FormData 생성
+                const formData = new FormData();
+                formData.append('text', text);
+                formData.append('video', videoBlob, 'video.mp4');
+                formData.append('source', source);
+
+                // 로컬 프록시 사용 (CORS 우회)
+                const response = await fetch('/api/proxy/video-cache/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    console.log('캐시 업로드 성공:', result.cache_key);
+                    return { success: true, cache_key: result.cache_key };
+                } else {
+                    console.warn('캐시 업로드 실패:', result.error);
+                    return { success: false, error: result.error };
+                }
+
+            } catch (error) {
+                console.error('캐시 업로드 오류:', error);
+                return { success: false, error: error.message };
             }
-
-            // 순차적으로 다운로드 (브라우저 제한 우회)
-            successResults.forEach((result, index) => {
-                setTimeout(() => {
-                    downloadVideoUrl(result.url);
-                }, index * 500);
-            });
         }
 
         // === 단일 녹화 함수들 ===
@@ -1687,33 +1756,17 @@
                     video.play();
                 }
             });
-
-            // 업로드 탭 초기화
-            initUploadTab();
         });
 
-        // ========== 캐시 업로드 기능 ==========
+        // ========== 캐시 업로드 기능 (단일 녹화 탭) ==========
 
-        let uploadedVideoUrl = null;
-        let uploadHistory = [];
         let selectedFile = null;
 
-        // 업로드 탭 초기화
-        function initUploadTab() {
-            // API 키 로드
-            const savedApiKey = localStorage.getItem('videoCacheApiKey');
-            if (savedApiKey) {
-                document.getElementById('uploadApiKey').value = savedApiKey;
-            }
-
-            // 업로드 텍스트 글자 수 카운트
-            const uploadText = document.getElementById('uploadText');
-            uploadText.addEventListener('input', () => {
-                document.getElementById('uploadCharCount').textContent = `${uploadText.value.length}자`;
-            });
-
+        // 업로드 섹션 초기화
+        function initUploadSection() {
             // 드래그 앤 드롭 설정
             const dropZone = document.getElementById('fileDropZone');
+            if (!dropZone) return;
 
             dropZone.addEventListener('dragover', (e) => {
                 e.preventDefault();
@@ -1733,13 +1786,6 @@
                     handleFileSelection(files[0]);
                 }
             });
-
-            // 업로드 기록 로드
-            const savedHistory = localStorage.getItem('uploadHistory');
-            if (savedHistory) {
-                uploadHistory = JSON.parse(savedHistory);
-                renderUploadHistory();
-            }
         }
 
         // 파일 선택 핸들러
@@ -1786,21 +1832,14 @@
             return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
         }
 
-        // 캐시에 업로드
+        // 캐시에 업로드 (단일 녹화 탭)
         async function uploadVideoToCache() {
-            const apiKey = document.getElementById('uploadApiKey').value.trim();
             const text = document.getElementById('uploadText').value.trim();
             const source = document.getElementById('uploadSource').value;
 
             // 검증
-            if (!apiKey) {
-                alert('API 키를 입력해주세요.');
-                document.getElementById('uploadApiKey').focus();
-                return;
-            }
-
             if (!text) {
-                alert('대사 텍스트를 입력해주세요.');
+                alert('캐시할 텍스트를 입력해주세요.');
                 document.getElementById('uploadText').focus();
                 return;
             }
@@ -1809,9 +1848,6 @@
                 alert('비디오 파일을 선택해주세요.');
                 return;
             }
-
-            // API 키 저장
-            localStorage.setItem('videoCacheApiKey', apiKey);
 
             // UI 업데이트
             document.getElementById('uploadBtn').disabled = true;
@@ -1860,8 +1896,8 @@
                     xhr.onerror = () => reject(new Error('네트워크 오류'));
                     xhr.ontimeout = () => reject(new Error('요청 시간 초과'));
 
-                    xhr.open('POST', 'https://mindprep.co.kr/api/video-cache/upload');
-                    xhr.setRequestHeader('X-API-Key', apiKey);
+                    // 로컬 프록시 사용 (CORS 우회)
+                    xhr.open('POST', '/api/proxy/video-cache/upload');
                     xhr.timeout = 300000; // 5분
                     xhr.send(formData);
                 });
@@ -1869,33 +1905,13 @@
                 if (result.success) {
                     // 성공
                     document.getElementById('uploadProgressFill').style.width = '100%';
-                    document.getElementById('uploadStatusText').textContent = '업로드 완료!';
-
-                    uploadedVideoUrl = result.video_url;
-
-                    // 결과 표시
-                    document.getElementById('uploadResultEmpty').style.display = 'none';
-                    document.getElementById('uploadResult').style.display = 'block';
-                    document.getElementById('resultStatus').textContent = '✅ 성공';
-                    document.getElementById('resultStatus').style.color = '#4caf50';
-                    document.getElementById('resultCacheKey').textContent = result.cache_key || '-';
-                    document.getElementById('resultSource').textContent = result.source || source;
-                    document.getElementById('resultVideoUrl').textContent = result.video_url;
-                    document.getElementById('resultVideoUrl').href = result.video_url;
-
-                    // 기록 추가
-                    addToUploadHistory({
-                        text: text.substring(0, 50) + (text.length > 50 ? '...' : ''),
-                        source: source,
-                        url: result.video_url,
-                        cacheKey: result.cache_key,
-                        time: new Date().toLocaleString()
-                    });
+                    document.getElementById('uploadStatusText').textContent = `✅ 캐시 완료: ${result.cache_key || ''}`;
 
                     // 입력 초기화
                     document.getElementById('uploadText').value = '';
-                    document.getElementById('uploadCharCount').textContent = '0자';
                     clearFileSelection();
+
+                    alert('캐시 업로드 완료!\n캐시 키: ' + (result.cache_key || '-'));
 
                 } else {
                     throw new Error(result.error || '업로드 실패');
@@ -1905,64 +1921,15 @@
                 console.error('업로드 오류:', error);
                 document.getElementById('uploadStatusText').textContent = '오류: ' + error.message;
                 document.getElementById('uploadProgressFill').style.width = '0%';
-
-                // 결과에 오류 표시
-                document.getElementById('uploadResultEmpty').style.display = 'none';
-                document.getElementById('uploadResult').style.display = 'block';
-                document.getElementById('resultStatus').textContent = '❌ 실패: ' + error.message;
-                document.getElementById('resultStatus').style.color = '#e74c3c';
+                alert('업로드 실패: ' + error.message);
 
             } finally {
                 document.getElementById('uploadBtn').disabled = false;
-                document.getElementById('uploadBtn').textContent = '📤 캐시에 업로드';
+                document.getElementById('uploadBtn').textContent = '📤 업로드';
 
                 setTimeout(() => {
                     document.getElementById('uploadProgressContainer').style.display = 'none';
                 }, 3000);
-            }
-        }
-
-        // 업로드 기록 추가
-        function addToUploadHistory(item) {
-            uploadHistory.unshift(item);
-            if (uploadHistory.length > 20) {
-                uploadHistory = uploadHistory.slice(0, 20);
-            }
-            localStorage.setItem('uploadHistory', JSON.stringify(uploadHistory));
-            renderUploadHistory();
-        }
-
-        // 업로드 기록 렌더링
-        function renderUploadHistory() {
-            const container = document.getElementById('uploadHistory');
-
-            if (uploadHistory.length === 0) {
-                container.innerHTML = '<p style="color: #888; text-align: center; padding: 15px;">업로드 기록이 없습니다</p>';
-                return;
-            }
-
-            container.innerHTML = uploadHistory.map((item, index) => `
-                <div class="video-item">
-                    <div class="info">
-                        <div class="name">${escapeHtml(item.text)}</div>
-                        <div class="meta">${item.time} • ${item.source}</div>
-                    </div>
-                    <div class="actions">
-                        <button class="btn-play" onclick="window.open('${item.url}', '_blank')">▶</button>
-                        <button class="secondary" style="width:auto;padding:6px 10px;font-size:0.8em" onclick="copyToClipboard('${item.url}')">🔗</button>
-                    </div>
-                </div>
-            `).join('');
-        }
-
-        // 업로드된 URL 복사
-        function copyUploadedUrl() {
-            if (uploadedVideoUrl) {
-                copyToClipboard(uploadedVideoUrl);
-                const btn = event.target;
-                const originalText = btn.textContent;
-                btn.textContent = '✓ 복사됨';
-                setTimeout(() => { btn.textContent = originalText; }, 2000);
             }
         }
 
@@ -1973,13 +1940,6 @@
             }).catch(err => {
                 console.error('복사 실패:', err);
             });
-        }
-
-        // 업로드된 비디오 미리보기
-        function previewUploadedVideo() {
-            if (uploadedVideoUrl) {
-                window.open(uploadedVideoUrl, '_blank');
-            }
         }
     </script>
 </body>

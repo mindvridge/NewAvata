@@ -85,7 +85,7 @@ client_sessions = {}  # {sid: {'cancelled': False, 'start_time': None, 'generati
 generation_lock = threading.Lock()  # 동시 생성 방지 락
 
 # ===== 비디오 파일 자동 정리 설정 =====
-VIDEO_CLEANUP_ENABLED = True  # 자동 정리 활성화
+VIDEO_CLEANUP_ENABLED = False  # 자동 정리 비활성화 (수동 삭제)
 VIDEO_CLEANUP_TTL = 600  # 기본 TTL: 10분 (초)
 VIDEO_CLEANUP_INTERVAL = 60  # 정리 주기: 1분마다 확인
 VIDEO_CLEANUP_DIR = "results/realtime"  # 정리 대상 디렉토리
@@ -2777,145 +2777,205 @@ def generate_tts_audio(text, engine, voice, output_path=None):
         import soundfile as sf
         import librosa
 
-        # 텍스트 길이에 따른 예상 최소 오디오 길이 (한국어 기준 약 5자/초)
-        expected_min_duration = len(text) / 10.0
-        max_retries = 3
+        # 긴 텍스트는 분할해서 처리 (CosyVoice 서버 안정성 향상)
+        MAX_CHUNK_LENGTH = 80  # 최대 청크 길이
 
-        for attempt in range(max_retries):
-            start_time = time.time()
+        if len(text) > MAX_CHUNK_LENGTH:
+            print(f"[CosyVoice] 긴 텍스트 ({len(text)}자) → 분할 처리")
+            text_chunks = split_text_into_sentences(text, min_chunk_length=30, max_chunk_length=MAX_CHUNK_LENGTH)
+            print(f"[CosyVoice] {len(text_chunks)}개 청크로 분할: {[len(c) for c in text_chunks]}")
 
-            try:
-                # Non-streaming TTS 요청 (완전한 오디오 반환)
-                response = requests.post(
-                    f"{COSYVOICE_API_URL}/api/tts",
-                    json={"text": text, "speed": 1.0},
-                    timeout=180
-                )
+            all_audio = []
+            final_sr = None
 
-                if response.status_code == 200:
-                    wav_data = response.content
+            for i, chunk in enumerate(text_chunks):
+                print(f"[CosyVoice] 청크 {i+1}/{len(text_chunks)}: {chunk[:30]}...")
+                chunk_result = _generate_cosyvoice_chunk(chunk)
 
-                    elapsed = time.time() - start_time
-                    print(f"[CosyVoice] TTS 완료 (시간: {elapsed:.2f}초, 크기: {len(wav_data)} bytes)")
-
-                    # WAV 데이터 크기 검증
-                    if len(wav_data) < 1000:
-                        print(f"[CosyVoice] 재시도 {attempt + 1}/{max_retries}: 오디오 데이터 너무 작음 ({len(wav_data)} bytes)")
-                        time.sleep(0.5 * (attempt + 1))
-                        continue
-
-                    # WAV 데이터를 numpy로 변환
-                    wav_buffer = io.BytesIO(wav_data)
-                    audio_data, sr = sf.read(wav_buffer)
-
-                    # 스테레오인 경우 모노로 변환
-                    if len(audio_data.shape) > 1:
-                        audio_data = audio_data.mean(axis=1)
-
-                    # 원본 샘플레이트 유지 (24kHz 고음질) - 리샘플링은 립싱크 엔진에서 처리
-                    original_duration = len(audio_data) / sr
-                    print(f"[CosyVoice] 원본 오디오: {original_duration:.2f}초 ({sr}Hz, {len(audio_data)} samples)")
-
-                    # 오디오 길이 검증 (너무 짧으면 재시도)
-                    if original_duration < expected_min_duration and attempt < max_retries - 1:
-                        print(f"[CosyVoice] 재시도 {attempt + 1}/{max_retries}: 오디오 너무 짧음 ({original_duration:.2f}초 < 예상 {expected_min_duration:.2f}초)")
-                        time.sleep(0.5 * (attempt + 1))
-                        continue
-
-                    audio_numpy = audio_data.astype(np.float32)
-
-                    # 끝부분 무음/불필요한 소리 트리밍
-                    before_trim = len(audio_numpy)
-                    audio_numpy = trim_audio_silence(audio_numpy, sr)
-                    after_trim = len(audio_numpy)
-                    if before_trim != after_trim:
-                        print(f"[CosyVoice] 트리밍: {before_trim/sr:.2f}초 → {after_trim/sr:.2f}초")
-
-                    if output_path:
-                        sf.write(str(output_path), audio_numpy, sr)
-
-                    print(f"[CosyVoice] TTS 최종 완료 (길이: {len(audio_numpy)/sr:.2f}초, {sr}Hz)")
-                    # 원본 샘플레이트로 반환 (audio_processor에서 16kHz로 리샘플링됨)
-                    return (audio_numpy, sr)
-
+                if chunk_result:
+                    chunk_audio, chunk_sr = chunk_result
+                    all_audio.append(chunk_audio)
+                    final_sr = chunk_sr
                 else:
-                    print(f"[CosyVoice] HTTP 오류: {response.status_code} - {response.text}")
-                    if attempt < max_retries - 1:
-                        time.sleep(1.0 * (attempt + 1))
-                        continue
-                    # 최종 실패 시 ElevenLabs로 폴백
-                    print("[TTS] ElevenLabs로 폴백합니다...")
-                    return generate_tts_audio(text, 'elevenlabs', 'Custom', output_path)
+                    print(f"[CosyVoice] 청크 {i+1} 실패 → ElevenLabs 폴백")
+                    return generate_elevenlabs_tts(text, 'Custom', output_path)
 
-            except requests.exceptions.Timeout as e:
-                print(f"[CosyVoice] 타임아웃 (시도 {attempt + 1}/{max_retries})")
-                if attempt < max_retries - 1:
-                    time.sleep(2.0 * (attempt + 1))
+            if all_audio:
+                # 모든 청크 오디오 합치기
+                combined_audio = np.concatenate(all_audio)
+
+                # 트리밍
+                before_trim = len(combined_audio)
+                combined_audio = trim_audio_silence(combined_audio, final_sr)
+                after_trim = len(combined_audio)
+                if before_trim != after_trim:
+                    print(f"[CosyVoice] 트리밍: {before_trim/final_sr:.2f}초 → {after_trim/final_sr:.2f}초")
+
+                if output_path:
+                    sf.write(str(output_path), combined_audio, final_sr)
+
+                print(f"[CosyVoice] TTS 최종 완료 (총 {len(text_chunks)}개 청크, 길이: {len(combined_audio)/final_sr:.2f}초)")
+                return (combined_audio, final_sr)
+            else:
+                return generate_elevenlabs_tts(text, 'Custom', output_path)
+
+        # 짧은 텍스트는 단일 요청
+        result = _generate_cosyvoice_chunk(text)
+        if result:
+            audio_numpy, sr = result
+
+            # 트리밍
+            before_trim = len(audio_numpy)
+            audio_numpy = trim_audio_silence(audio_numpy, sr)
+            after_trim = len(audio_numpy)
+            if before_trim != after_trim:
+                print(f"[CosyVoice] 트리밍: {before_trim/sr:.2f}초 → {after_trim/sr:.2f}초")
+
+            if output_path:
+                sf.write(str(output_path), audio_numpy, sr)
+
+            print(f"[CosyVoice] TTS 최종 완료 (길이: {len(audio_numpy)/sr:.2f}초, {sr}Hz)")
+            return (audio_numpy, sr)
+        else:
+            print("[CosyVoice] 실패 → ElevenLabs 폴백")
+            return generate_elevenlabs_tts(text, 'Custom', output_path)
+
+    elif engine == 'elevenlabs':
+        # ElevenLabs TTS (비스트리밍 고품질)
+        return generate_elevenlabs_tts(text, voice, output_path)
+
+    else:
+        print(f"[TTS] 알 수 없는 엔진: {engine}")
+        return None
+
+
+def _generate_cosyvoice_chunk(text, max_retries=3):
+    """단일 텍스트 청크에 대한 CosyVoice TTS 요청"""
+    import requests
+    import io
+    import soundfile as sf
+
+    # 텍스트 길이에 따른 예상 최소 오디오 길이 (한국어 기준 약 5자/초)
+    expected_min_duration = len(text) / 10.0
+
+    for attempt in range(max_retries):
+        start_time = time.time()
+
+        try:
+            # Non-streaming TTS 요청 (완전한 오디오 반환)
+            response = requests.post(
+                f"{COSYVOICE_API_URL}/api/tts",
+                json={"text": text, "speed": 1.0},
+                timeout=180
+            )
+
+            if response.status_code == 200:
+                wav_data = response.content
+
+                elapsed = time.time() - start_time
+                print(f"[CosyVoice] TTS 완료 (시간: {elapsed:.2f}초, 크기: {len(wav_data)} bytes)")
+
+                # WAV 데이터 크기 검증
+                if len(wav_data) < 1000:
+                    print(f"[CosyVoice] 재시도 {attempt + 1}/{max_retries}: 오디오 데이터 너무 작음 ({len(wav_data)} bytes)")
+                    time.sleep(0.5 * (attempt + 1))
                     continue
-                print("[TTS] ElevenLabs로 폴백합니다...")
-                return generate_tts_audio(text, 'elevenlabs', 'Custom', output_path)
-            except requests.exceptions.ConnectionError as e:
-                print(f"[CosyVoice] 서버 연결 실패 (시도 {attempt + 1}/{max_retries}): {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(2.0 * (attempt + 1))
+
+                # WAV 데이터를 numpy로 변환
+                wav_buffer = io.BytesIO(wav_data)
+                audio_data, sr = sf.read(wav_buffer)
+
+                # 스테레오인 경우 모노로 변환
+                if len(audio_data.shape) > 1:
+                    audio_data = audio_data.mean(axis=1)
+
+                # 원본 샘플레이트 유지 (24kHz 고음질)
+                original_duration = len(audio_data) / sr
+                print(f"[CosyVoice] 원본 오디오: {original_duration:.2f}초 ({sr}Hz, {len(audio_data)} samples)")
+
+                # 오디오 길이 검증 (너무 짧으면 재시도)
+                if original_duration < expected_min_duration and attempt < max_retries - 1:
+                    print(f"[CosyVoice] 재시도 {attempt + 1}/{max_retries}: 오디오 너무 짧음 ({original_duration:.2f}초 < 예상 {expected_min_duration:.2f}초)")
+                    time.sleep(0.5 * (attempt + 1))
                     continue
-                print("[TTS] ElevenLabs로 폴백합니다...")
-                return generate_tts_audio(text, 'elevenlabs', 'Custom', output_path)
-            except Exception as e:
-                print(f"[CosyVoice] 오류 (시도 {attempt + 1}/{max_retries}): {e}")
-                import traceback
-                traceback.print_exc()
+
+                audio_numpy = audio_data.astype(np.float32)
+                return (audio_numpy, sr)
+
+            else:
+                print(f"[CosyVoice] HTTP 오류: {response.status_code} - {response.text}")
                 if attempt < max_retries - 1:
                     time.sleep(1.0 * (attempt + 1))
                     continue
-                print("[TTS] ElevenLabs로 폴백합니다...")
-                return generate_tts_audio(text, 'elevenlabs', 'Custom', output_path)
+                return None
 
-        # 모든 재시도 실패 시 ElevenLabs로 폴백
-        print("[CosyVoice] 모든 재시도 실패, ElevenLabs로 폴백합니다...")
-        return generate_tts_audio(text, 'elevenlabs', 'Custom', output_path)
+        except requests.exceptions.Timeout as e:
+            print(f"[CosyVoice] 타임아웃 (시도 {attempt + 1}/{max_retries})")
+            if attempt < max_retries - 1:
+                time.sleep(2.0 * (attempt + 1))
+                continue
+            return None
+        except requests.exceptions.ConnectionError as e:
+            print(f"[CosyVoice] 서버 연결 실패 (시도 {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2.0 * (attempt + 1))
+                continue
+            return None
+        except Exception as e:
+            print(f"[CosyVoice] 오류 (시도 {attempt + 1}/{max_retries}): {e}")
+            import traceback
+            traceback.print_exc()
+            if attempt < max_retries - 1:
+                time.sleep(1.0 * (attempt + 1))
+                continue
+            return None
 
-    elif engine == 'elevenlabs':
-        # ElevenLabs TTS (스트리밍 + Flash v2.5 저지연 모델)
-        import requests
-        import io
-        import soundfile as sf
-        import librosa
-        from pydub import AudioSegment
+    return None
 
-        voice_id = get_elevenlabs_voice_id(voice)
-        # 스트리밍 엔드포인트 사용
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
 
-        headers = {
-            "Accept": "audio/mpeg",
-            "Content-Type": "application/json",
-            "xi-api-key": ELEVENLABS_API_KEY
+def generate_elevenlabs_tts(text, voice, output_path=None):
+    """
+    ElevenLabs TTS 생성 (비스트리밍 + 고품질 모델)
+
+    Returns:
+        tuple: (audio_numpy, sample_rate) - 성공 시 numpy array와 샘플레이트 반환
+        None: 실패 시
+    """
+    import requests
+    import io
+    import soundfile as sf
+    from pydub import AudioSegment
+
+    voice_id = get_elevenlabs_voice_id(voice)
+
+    # 비스트리밍 엔드포인트 사용 (고품질)
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+
+    headers = {
+        "Accept": "audio/mpeg",
+        "Content-Type": "application/json",
+        "xi-api-key": ELEVENLABS_API_KEY
+    }
+
+    data = {
+        "text": text,
+        "model_id": "eleven_multilingual_v2",  # 고품질 다국어 모델
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.75
         }
+    }
 
-        data = {
-            "text": text,
-            "model_id": "eleven_flash_v2_5",  # 저지연 Flash 모델 (32개 언어, ~75ms)
-            "voice_settings": {
-                "stability": 0.5,
-                "similarity_boost": 0.75
-            }
-        }
+    start_time = time.time()
 
-        # 스트리밍 요청
-        start_time = time.time()
-        response = requests.post(url, json=data, headers=headers, stream=True)
+    try:
+        # 비스트리밍 요청 (전체 오디오 반환)
+        response = requests.post(url, json=data, headers=headers, timeout=180)
 
         if response.status_code == 200:
-            # 스트리밍 데이터 수집
-            audio_chunks = []
-            for chunk in response.iter_content(chunk_size=1024):
-                if chunk:
-                    audio_chunks.append(chunk)
-
-            mp3_data = b''.join(audio_chunks)
+            mp3_data = response.content
             elapsed = time.time() - start_time
-            print(f"ElevenLabs 스트리밍 완료 (시간: {elapsed:.2f}초, 크기: {len(mp3_data)} bytes)")
+            print(f"[ElevenLabs] TTS 완료 (시간: {elapsed:.2f}초, 크기: {len(mp3_data)} bytes)")
 
             # MP3를 메모리에서 디코딩 (원본 샘플레이트 유지)
             mp3_bytes = io.BytesIO(mp3_data)
@@ -2932,19 +2992,21 @@ def generate_tts_audio(text, engine, voice, output_path=None):
             # 끝부분 무음/불필요한 소리 트리밍
             audio_numpy = trim_audio_silence(audio_numpy, original_sr)
 
-            # output_path가 제공되면 저장 (호환성)
+            # output_path가 제공되면 저장
             if output_path:
                 sf.write(str(output_path), audio_numpy, original_sr)
 
-            print(f"[ElevenLabs] TTS 완료 (길이: {len(audio_numpy)/original_sr:.2f}초, {original_sr}Hz)")
-            # 원본 샘플레이트로 반환 (audio_processor에서 16kHz로 리샘플링됨)
+            print(f"[ElevenLabs] TTS 최종 완료 (길이: {len(audio_numpy)/original_sr:.2f}초, {original_sr}Hz)")
             return (audio_numpy, original_sr)
 
-        print(f"ElevenLabs 오류: {response.status_code} - {response.text}")
+        print(f"[ElevenLabs] 오류: {response.status_code} - {response.text}")
         return None
 
-    print(f"[TTS] 알 수 없는 엔진: {engine}")
-    return None
+    except Exception as e:
+        print(f"[ElevenLabs] 예외 발생: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 
 @app.route('/api/generate', methods=['POST'])
@@ -4136,6 +4198,87 @@ def save_video():
             return jsonify({"success": False, "error": str(e)}), 500
     else:
         return jsonify({"success": False, "error": "파일을 찾을 수 없습니다"}), 404
+
+
+# ===== 비디오 캐시 API 프록시 =====
+VIDEO_CACHE_API_URL = "https://mindprep.co.kr/api/video-cache"
+VIDEO_CACHE_API_KEY = "55065d3d61286f330c97bd899ff7047b98456b0e005432296c4f524900dc03f4"
+
+@app.route('/api/proxy/video-cache/uncached', methods=['GET'])
+def proxy_video_cache_uncached():
+    """미캐시 항목 조회 프록시"""
+    try:
+        # 쿼리 파라미터 전달
+        params = request.args.to_dict()
+        print(f"[프록시] 미캐시 조회 요청: {params}")
+
+        response = requests.get(
+            f"{VIDEO_CACHE_API_URL}/uncached",
+            params=params,
+            headers={"X-API-Key": VIDEO_CACHE_API_KEY},
+            timeout=30
+        )
+
+        result = response.json()
+        print(f"[프록시] API 응답 상태: {response.status_code}")
+        print(f"[프록시] API 응답 키: {list(result.keys()) if isinstance(result, dict) else 'not dict'}")
+        if isinstance(result, dict):
+            if 'uncached_items' in result:
+                print(f"[프록시] uncached_items 개수: {len(result.get('uncached_items', []))}")
+            if 'items' in result:
+                print(f"[프록시] items 개수: {len(result.get('items', []))}")
+            if 'data' in result:
+                print(f"[프록시] data: {type(result.get('data'))}")
+
+        return jsonify(result), response.status_code
+
+    except requests.Timeout:
+        return jsonify({"success": False, "error": "API 요청 타임아웃"}), 504
+    except Exception as e:
+        print(f"[프록시] 오류: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/proxy/video-cache/upload', methods=['POST'])
+def proxy_video_cache_upload():
+    """비디오 캐시 업로드 프록시"""
+    try:
+        # multipart form data 전달
+        files = {}
+        data = {}
+
+        # 파일 처리
+        if 'video' in request.files:
+            video_file = request.files['video']
+            file_content = video_file.read()
+            files['video'] = (video_file.filename or 'video.mp4', file_content, video_file.content_type or 'video/mp4')
+            print(f"[프록시 업로드] 파일 수신: {video_file.filename}, 크기: {len(file_content)} bytes")
+        else:
+            print("[프록시 업로드] 경고: 비디오 파일 없음")
+
+        # 폼 데이터 처리
+        for key in request.form:
+            data[key] = request.form[key]
+        print(f"[프록시 업로드] 폼 데이터: {data}")
+
+        response = requests.post(
+            f"{VIDEO_CACHE_API_URL}/upload",
+            files=files,
+            data=data,
+            headers={"X-API-Key": VIDEO_CACHE_API_KEY},
+            timeout=300  # 업로드는 5분 타임아웃
+        )
+
+        result = response.json()
+        print(f"[프록시 업로드] 응답: {response.status_code}, success={result.get('success')}, cache_key={result.get('cache_key', 'N/A')}")
+
+        return jsonify(result), response.status_code
+
+    except requests.Timeout:
+        print("[프록시 업로드] 타임아웃")
+        return jsonify({"success": False, "error": "업로드 타임아웃"}), 504
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route('/assets/<path:filename>')
