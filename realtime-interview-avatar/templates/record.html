@@ -1102,24 +1102,31 @@
             socket.on('error', (data) => {
                 console.error('오류:', data);
 
+                // 오류 단계 파악 (TTS 또는 립싱크)
+                const errorStage = data.stage || '알 수 없음';
+                const errorMessage = data.message || '알 수 없는 오류';
+                const detailedError = `[${errorStage}] ${errorMessage}`;
+
+                console.error(`[배치 오류] 단계: ${errorStage}, 메시지: ${errorMessage}`);
+
                 if (uncachedBatchMode) {
-                    // 미캐시 녹화 모드 (배치 진행 중이거나 중지된 상태)
+                    // 미캐시 녹화 모드 - 오류 발생 시 배치 중지
                     uncachedResults[uncachedCurrentIndex] = {
                         success: false,
-                        error: data.message
+                        error: detailedError
                     };
-                    updateUncachedItemStatus(uncachedCurrentIndex, 'error', '오류: ' + data.message);
+                    updateUncachedItemStatus(uncachedCurrentIndex, 'error', detailedError);
 
-                    uncachedCurrentIndex++;
+                    // 진행률 업데이트
                     updateUncachedProgress();
 
-                    if (uncachedCurrentIndex < uncachedItems.length && uncachedRunning) {
-                        setTimeout(() => processNextUncachedItem(), 500);
-                    } else {
-                        finishUncachedRecording();
-                    }
+                    // 배치 중지 (다음 항목으로 진행하지 않음)
+                    document.getElementById('uncachedProgressStatus').textContent =
+                        `❌ 오류로 중지됨: ${detailedError}`;
+                    console.error(`[배치 중지] 항목 ${uncachedCurrentIndex + 1}에서 오류 발생 - ${detailedError}`);
+                    finishUncachedRecording();
                 } else {
-                    document.getElementById('statusText').textContent = '오류: ' + data.message;
+                    document.getElementById('statusText').textContent = '오류: ' + errorMessage;
                     document.getElementById('generateBtn').disabled = false;
                     document.getElementById('generateBtn').textContent = '🎬 영상 생성';
                     document.getElementById('queueStatus').style.display = 'none';
@@ -1310,18 +1317,20 @@
             listEl.style.display = 'block';
             actionsEl.style.display = 'block';
 
-            listEl.innerHTML = uncachedItems.map((item, index) => `
-                <div class="batch-item" id="uncachedItem${index}">
+            listEl.innerHTML = uncachedItems.map((item, index) => {
+                const isIdle = item.text === 'IDLE_VIDEO_PLACEHOLDER_LOOP';
+                return `
+                <div class="batch-item" id="uncachedItem${index}" ${isIdle ? 'style="background:#2a2a3a;"' : ''}>
                     <div class="number">${index + 1}</div>
                     <div class="info">
-                        <div class="text">${escapeHtml(item.text)}</div>
+                        <div class="text">${isIdle ? '<span style="color:#888;">IDLE (idle_short.mp4 업로드)</span>' : escapeHtml(item.text)}</div>
                         <div class="meta" id="uncachedMeta${index}">${item.category || ''} ${item.job_name ? '• ' + item.job_name : ''}</div>
                     </div>
                     <div class="actions" id="uncachedActions${index}">
-                        <button class="primary" style="width:auto;padding:6px 12px;font-size:0.8em;" onclick="recordSingleUncached(${index})">녹화</button>
+                        <button class="primary" style="width:auto;padding:6px 12px;font-size:0.8em;" onclick="recordSingleUncached(${index})">${isIdle ? '업로드' : '녹화'}</button>
                     </div>
-                </div>
-            `).join('');
+                </div>`;
+            }).join('');
         }
 
         // 단일 미캐시 항목 녹화
@@ -1388,53 +1397,115 @@
         async function processUncachedItem(index) {
             const item = uncachedItems[index];
             const text = item.text;
-            const avatarPath = 'auto';
-            const ttsEngine = document.getElementById('uncachedTtsEngine').value;
-            const ttsVoice = document.getElementById('uncachedTtsVoice').value;
-            const resolution = document.getElementById('uncachedResolution').value;
+            const isIdlePlaceholder = (text === 'IDLE_VIDEO_PLACEHOLDER_LOOP');
 
             updateUncachedItemStatus(index, 'processing', '요청 중...');
 
             try {
-                const response = await fetch('/api/record', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        text: text,
-                        avatar_path: avatarPath,
-                        tts_engine: ttsEngine,
-                        tts_voice: ttsVoice,
-                        resolution: resolution,
-                        output_format: 'mp4',
-                        frame_skip: 1,
-                        filename: `uncached_${String(index + 1).padStart(3, '0')}`,
-                        sid: clientSid
-                    })
-                });
+                if (isIdlePlaceholder) {
+                    // IDLE_VIDEO_PLACEHOLDER_LOOP: idle_short.mp4를 직접 캐시에 업로드 (TTS/립싱크 불필요)
+                    const resolution = document.getElementById('uncachedResolution').value;
+                    const idleVideoUrl = `/assets/${resolution}/idle_short.mp4`;
 
-                const result = await response.json();
+                    updateUncachedItemStatus(index, 'processing', 'idle 영상 업로드 중...');
+                    document.getElementById('uncachedProgressStatus').textContent =
+                        `[${index + 1}/${uncachedItems.length}] idle 영상 캐시 업로드 중...`;
 
-                if (!result.success) {
-                    throw new Error(result.error || '요청 실패');
-                }
+                    // idle_short.mp4 다운로드
+                    let videoBlob;
+                    const videoResponse = await fetch(idleVideoUrl);
+                    if (!videoResponse.ok) {
+                        // 해상도별 경로 실패 시 기본 경로 시도
+                        const fallbackResponse = await fetch('/assets/idle_short.mp4');
+                        if (!fallbackResponse.ok) {
+                            throw new Error('idle_short.mp4 파일을 찾을 수 없습니다');
+                        }
+                        videoBlob = await fallbackResponse.blob();
+                    } else {
+                        videoBlob = await videoResponse.blob();
+                    }
 
-            } catch (error) {
-                console.error('미캐시 항목 처리 오류:', error);
-                uncachedResults[index] = {
-                    success: false,
-                    error: error.message
-                };
-                updateUncachedItemStatus(index, 'error', '오류: ' + error.message);
+                    // 캐시 서버에 직접 업로드
+                    const source = document.getElementById('uncachedSource').value;
+                    const formData = new FormData();
+                    formData.append('text', text);
+                    formData.append('video', videoBlob, 'video.mp4');
+                    formData.append('source', source);
 
-                if (uncachedBatchMode) {
+                    const uploadResponse = await fetch('/api/proxy/video-cache/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    const uploadResult = await uploadResponse.json();
+
+                    if (!uploadResult.success) {
+                        throw new Error(uploadResult.error || '캐시 업로드 실패');
+                    }
+
+                    // 성공 처리
+                    uncachedResults[index] = { success: true, url: idleVideoUrl };
+                    updateUncachedItemStatus(index, 'completed', '완료 (idle 캐시됨)');
+
+                    // 다음 항목으로 진행
                     uncachedCurrentIndex++;
                     updateUncachedProgress();
 
                     if (uncachedCurrentIndex < uncachedItems.length && uncachedRunning) {
-                        setTimeout(() => processNextUncachedItem(), 500);
+                        setTimeout(() => processNextUncachedItem(), 100);
                     } else {
                         finishUncachedRecording();
                     }
+                } else {
+                    // 일반 미캐시: TTS + 립싱크 녹화 후 업로드
+                    const avatarPath = 'auto';
+                    const ttsEngine = document.getElementById('uncachedTtsEngine').value;
+                    const ttsVoice = document.getElementById('uncachedTtsVoice').value;
+                    const resolution = document.getElementById('uncachedResolution').value;
+
+                    const response = await fetch('/api/record', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            text: text,
+                            avatar_path: avatarPath,
+                            tts_engine: ttsEngine,
+                            tts_voice: ttsVoice,
+                            resolution: resolution,
+                            output_format: 'mp4',
+                            frame_skip: 1,
+                            filename: `uncached_${String(index + 1).padStart(3, '0')}`,
+                            sid: clientSid
+                        })
+                    });
+
+                    const result = await response.json();
+
+                    if (!result.success) {
+                        throw new Error(result.error || '요청 실패');
+                    }
+                    // 립싱크 모드는 socket 'complete' 이벤트에서 다음 처리
+                }
+
+            } catch (error) {
+                const detailedError = `[API 요청] ${error.message}`;
+                console.error(`[배치 오류] 항목 ${index + 1}: ${detailedError}`);
+
+                uncachedResults[index] = {
+                    success: false,
+                    error: detailedError
+                };
+                updateUncachedItemStatus(index, 'error', detailedError);
+
+                if (uncachedBatchMode) {
+                    // 진행률 업데이트
+                    updateUncachedProgress();
+
+                    // 배치 중지 (다음 항목으로 진행하지 않음)
+                    document.getElementById('uncachedProgressStatus').textContent =
+                        `❌ 오류로 중지됨: ${detailedError}`;
+                    console.error(`[배치 중지] 항목 ${index + 1}에서 API 오류 발생`);
+                    finishUncachedRecording();
                 }
             }
         }

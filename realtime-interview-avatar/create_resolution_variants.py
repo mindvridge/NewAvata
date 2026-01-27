@@ -27,21 +27,16 @@ RESOLUTIONS = {
 
 # 변환할 영상 목록
 SOURCE_VIDEOS = [
-    "질문_long.mp4",
-    "질문_short.mp4",
-    "기본.mp4",
-    "끄덕.mp4",
-    "끄덕2.mp4",
-    "서류보기.mp4",
-    "서류보기2.mp4",
-    "미소1.mp4",
-    "미소2.mp4"
+    "new_talk_long.mp4",
+    "new_talk_short.mp4",
+    "idle_long.mp4",
+    "idle_short.mp4"
 ]
 
 # 립싱크용 영상 (프리컴퓨트 필요)
 LIPSYNC_VIDEOS = [
-    "질문_long.mp4",
-    "질문_short.mp4"
+    "new_talk_long.mp4",
+    "new_talk_short.mp4"
 ]
 
 
@@ -136,9 +131,9 @@ def generate_precomputed():
         res_precompute_dir.mkdir(exist_ok=True)
 
     # 프리컴퓨트 스크립트 경로
-    precompute_script = BASE_DIR / "precompute_face.py"
+    precompute_script = BASE_DIR / "precompute_avatar.py"
     if not precompute_script.exists():
-        print("[오류] precompute_face.py를 찾을 수 없습니다")
+        print("[오류] precompute_avatar.py를 찾을 수 없습니다")
         return
 
     for res in RESOLUTIONS:

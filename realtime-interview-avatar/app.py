@@ -96,6 +96,23 @@ VIDEO_CLEANUP_DIR = "results/realtime"  # 정리 대상 디렉토리
 LIPSYNC_BASE_URL = os.getenv('LIPSYNC_BASE_URL', '')  # 빈 문자열이면 상대 경로 사용
 print(f"[설정] LIPSYNC_BASE_URL = '{LIPSYNC_BASE_URL}'" if LIPSYNC_BASE_URL else "[설정] LIPSYNC_BASE_URL 미설정 (상대 경로 사용)")
 
+# ===== LLM 설정 (채팅 기능) =====
+LLM_API_URL = os.getenv('LLM_API_URL', '')
+LLM_API_KEY = os.getenv('LLM_API_KEY', '')
+LLM_MODEL = os.getenv('LLM_MODEL', 'vllm-qwen3-30b-a3b')
+LLM_TEMPERATURE = float(os.getenv('LLM_TEMPERATURE', '0.7'))
+LLM_MAX_TOKENS = int(os.getenv('LLM_MAX_TOKENS', '150'))
+
+# OpenAI 폴백 설정
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
+
+print(f"[LLM 설정] Primary: {LLM_API_URL[:30]}... (Model: {LLM_MODEL})" if LLM_API_URL else "[LLM 설정] Primary LLM 미설정")
+print(f"[LLM 설정] Fallback: OpenAI {'설정됨' if OPENAI_API_KEY else '미설정'}")
+
+# 대화 히스토리 저장 (세션별)
+conversation_histories = {}  # {sid: [{'role': 'user/assistant', 'content': '...'}]}
+
 def build_video_url(video_filename, use_full_url=None):
     """
     비디오 파일명으로 URL 생성
@@ -942,107 +959,92 @@ class LipsyncEngine:
 
         timings['blending'] = time.time() - t0
 
-        # ========== 립싱크 끝: 유지 + 페이드아웃 (원본 입모양으로 복귀) ==========
-        # 몸은 계속 움직이고, 입 부분만 마지막 립싱크 상태 유지 후 페이드아웃
-        # 1. 마지막 립싱크 입모양을 잠시 유지 (0.2초) - 몸은 계속 움직임
-        # 2. 그 후 원본 영상의 입모양으로 부드럽게 전환 (0.3초)
-        hold_duration = 0.2  # 마지막 립싱크 유지 시간
-        fadeout_duration = 0.3  # 페이드아웃 시간
-
-        hold_frames = int(fps * hold_duration)
-        fadeout_frames = int(fps * fadeout_duration)
-        total_transition_frames = hold_frames + fadeout_frames
-        total_transition_frames = min(total_transition_frames, len(generated_frames) // 3)  # 최대 전체의 1/3
-
-        # 비율 조정 (총 프레임이 줄어들었을 경우)
-        if total_transition_frames < hold_frames + fadeout_frames:
-            ratio = total_transition_frames / (hold_frames + fadeout_frames)
-            hold_frames = int(hold_frames * ratio)
-            fadeout_frames = total_transition_frames - hold_frames
-
-        if total_transition_frames > 0 and len(res_frame_list) > 0:
-            print(f"[립싱크 종료 처리] 유지 {hold_frames}프레임 ({hold_frames/fps:.2f}초) + 페이드아웃 {fadeout_frames}프레임 ({fadeout_frames/fps:.2f}초)")
-
-            # 마지막 립싱크 입 영역 (256x256 얼굴 영역)
-            last_res_frame = res_frame_list[-1]
-            last_res_frame_uint8 = last_res_frame.astype(np.uint8)
-            gaussian = cv2.GaussianBlur(last_res_frame_uint8, (3, 3), 1.5)
-            last_mouth_sharpened = cv2.addWeighted(last_res_frame_uint8, sharpen_alpha, gaussian, sharpen_beta, 0)
-
-            start_transition = len(generated_frames) - total_transition_frames
-
-            for i in range(total_transition_frames):
-                frame_idx_in_list = start_transition + i
-                # 원본 프레임 인덱스 (아바타 영상 순환) - 몸은 계속 움직임
-                original_idx = frame_idx_in_list % len(frames_list)
-                coord = coords_list[original_idx]
-                original_frame = frames_list[original_idx].copy()
-
-                x1, y1, x2, y2 = [int(c) for c in coord]
-                target_size = (x2 - x1, y2 - y1)
-
-                if target_size[0] <= 0 or target_size[1] <= 0:
-                    generated_frames[frame_idx_in_list] = original_frame
-                    continue
-
-                # 마지막 립싱크 입 영역을 현재 프레임 크기에 맞게 리사이즈
-                pred_frame_resized = cv2.resize(last_mouth_sharpened, target_size, interpolation=cv2.INTER_LINEAR)
-
-                # 립싱크 적용된 프레임 생성 (몸은 원본, 입은 마지막 립싱크)
-                if mask_cache is not None and crop_box_cache is not None:
-                    lipsync_frame = get_image_blending(
-                        original_frame.copy(),
-                        pred_frame_resized,
-                        [x1, y1, x2, y2],
-                        mask_cache,
-                        crop_box_cache
-                    )
-                else:
-                    lipsync_frame = get_image(
-                        original_frame.copy(),
-                        pred_frame_resized,
-                        [x1, y1, x2, y2],
-                        mode="jaw",
-                        fp=face_parsing
-                    )
-
-                if i < hold_frames:
-                    # 유지 구간: 몸은 움직이고, 입만 마지막 립싱크 상태 유지
-                    generated_frames[frame_idx_in_list] = lipsync_frame
-                else:
-                    # 페이드아웃 구간: 립싱크 입 → 원본 입으로 전환
-                    fadeout_idx = i - hold_frames
-                    alpha = (fadeout_idx + 1) / fadeout_frames  # 0 → 1
-
-                    # 립싱크 프레임과 원본을 블렌딩 (입 부분만 점차 원본으로)
-                    blended = cv2.addWeighted(lipsync_frame, 1 - alpha, original_frame, alpha, 0)
-                    generated_frames[frame_idx_in_list] = blended
-
         # ========== 다음 완전한 애니메이션 사이클까지 패딩 (프레임 정렬) ==========
         # 다음 영상과 프레임을 맞추기 위해 완전한 사이클까지 패딩
         # 예: 7초 오디오 (175프레임) → 10초 (250프레임 = 2 × 125)
-        # - 아바타 영상(몸/배경)은 계속 플레이
-        # - 입 부분: 마지막 립싱크 → 원본 영상 입으로 자연스럽게 보간
         avatar_total_frames = len(frames_list)  # new_talk_short = 125프레임 (5초)
         lipsync_frames = len(generated_frames)
 
         # 다음 완전한 사이클 계산 (최소 1사이클)
         target_frames = math.ceil(lipsync_frames / avatar_total_frames) * avatar_total_frames
         if target_frames == lipsync_frames:
-            # 정확히 사이클 끝인 경우, 이미 정렬되어 있음
             target_frames = lipsync_frames
 
         if lipsync_frames < target_frames:
-            padding_frames = target_frames - lipsync_frames
+            padding_count = target_frames - lipsync_frames
 
             print(f"[프레임 패딩] 립싱크 {lipsync_frames}프레임 ({lipsync_frames/fps:.1f}초) → {target_frames}프레임 ({target_frames/fps:.1f}초) [사이클 정렬]")
-            print(f"  → 원본 영상 {padding_frames}프레임 ({padding_frames/fps:.2f}초) 추가")
+            print(f"  → 패딩 {padding_count}프레임 ({padding_count/fps:.2f}초) 추가")
 
-            # 패딩 프레임 생성 (원본 영상 그대로 사용 - 이미 페이드아웃됨)
-            for i in range(padding_frames):
+            # ========== 페이드아웃을 패딩 구간에서 수행 (오디오 중 입 움직임 유지) ==========
+            # 1. 유지 구간 (0.2초): 마지막 립싱크 입모양 유지 + 몸 계속 움직임
+            # 2. 페이드아웃 구간 (0.3초): 립싱크 입 → 원본 입으로 전환
+            # 3. 나머지: 원본 영상 그대로
+            hold_duration = 0.2
+            fadeout_duration = 0.3
+            hold_frames = int(fps * hold_duration)
+            fadeout_frames = int(fps * fadeout_duration)
+            total_transition_frames = hold_frames + fadeout_frames
+            total_transition_frames = min(total_transition_frames, padding_count)  # 패딩보다 길 수 없음
+
+            if total_transition_frames < hold_frames + fadeout_frames:
+                ratio = total_transition_frames / (hold_frames + fadeout_frames) if (hold_frames + fadeout_frames) > 0 else 0
+                hold_frames = int(hold_frames * ratio)
+                fadeout_frames = total_transition_frames - hold_frames
+
+            # 마지막 립싱크 입 영역 준비
+            last_mouth_sharpened = None
+            if total_transition_frames > 0 and len(res_frame_list) > 0:
+                last_res_frame = res_frame_list[-1]
+                last_res_frame_uint8 = last_res_frame.astype(np.uint8)
+                gaussian = cv2.GaussianBlur(last_res_frame_uint8, (3, 3), 1.5)
+                last_mouth_sharpened = cv2.addWeighted(last_res_frame_uint8, sharpen_alpha, gaussian, sharpen_beta, 0)
+                print(f"[립싱크 종료 처리] 패딩 구간에서 유지 {hold_frames}프레임 + 페이드아웃 {fadeout_frames}프레임")
+
+            for i in range(padding_count):
                 frame_idx = (lipsync_frames + i) % len(frames_list)
                 original_frame = frames_list[frame_idx].copy()
-                generated_frames.append(original_frame)
+
+                if i < total_transition_frames and last_mouth_sharpened is not None:
+                    # 페이드아웃 전환 구간
+                    coord = coords_list[frame_idx]
+                    x1, y1, x2, y2 = [int(c) for c in coord]
+                    target_size = (x2 - x1, y2 - y1)
+
+                    if target_size[0] > 0 and target_size[1] > 0:
+                        pred_frame_resized = cv2.resize(last_mouth_sharpened, target_size, interpolation=cv2.INTER_LINEAR)
+
+                        if mask_cache is not None and crop_box_cache is not None:
+                            lipsync_frame = get_image_blending(
+                                original_frame.copy(),
+                                pred_frame_resized,
+                                [x1, y1, x2, y2],
+                                mask_cache,
+                                crop_box_cache
+                            )
+                        else:
+                            lipsync_frame = get_image(
+                                original_frame.copy(),
+                                pred_frame_resized,
+                                [x1, y1, x2, y2],
+                                mode="jaw",
+                                fp=face_parsing
+                            )
+
+                        if i < hold_frames:
+                            # 유지 구간: 마지막 립싱크 입 유지
+                            generated_frames.append(lipsync_frame)
+                        else:
+                            # 페이드아웃 구간: 립싱크 입 → 원본 입
+                            fadeout_idx = i - hold_frames
+                            alpha = (fadeout_idx + 1) / fadeout_frames  # 0 → 1
+                            blended = cv2.addWeighted(lipsync_frame, 1 - alpha, original_frame, alpha, 0)
+                            generated_frames.append(blended)
+                    else:
+                        generated_frames.append(original_frame)
+                else:
+                    # 전환 이후: 원본 영상 그대로
+                    generated_frames.append(original_frame)
 
             cycles = len(generated_frames) // avatar_total_frames
             print(f"[프레임 패딩] 완료: 총 {len(generated_frames)}프레임 ({len(generated_frames)/fps:.1f}초) = {cycles}사이클")
@@ -1131,10 +1133,23 @@ class LipsyncEngine:
             socketio.emit('status', emit_kwargs)
 
         # audio_input이 튜플이면 임시 파일 생성 (고유 ID 사용)
+        # 비디오가 오디오보다 길 경우 무음 패딩 추가 (플레이어가 오디오 길이로 재생 제한 방지)
         if isinstance(audio_input, tuple):
             import soundfile as sf
             temp_audio = str(output_path / f"temp_audio_{unique_id}.wav")
             audio_numpy, sample_rate = audio_input
+
+            # 비디오 길이에 맞춰 오디오 무음 패딩
+            if final_video_duration > final_audio_duration:
+                silence_duration = final_video_duration - final_audio_duration + 0.2  # 여유 200ms
+                silence_samples = int(silence_duration * sample_rate)
+                if audio_numpy.ndim == 1:
+                    silence = np.zeros(silence_samples, dtype=audio_numpy.dtype)
+                else:
+                    silence = np.zeros((silence_samples, audio_numpy.shape[1]), dtype=audio_numpy.dtype)
+                audio_numpy = np.concatenate([audio_numpy, silence])
+                print(f"  [오디오 패딩] 무음 {silence_duration:.2f}초 추가 → 총 {len(audio_numpy)/sample_rate:.2f}초 (비디오: {final_video_duration:.2f}초)")
+
             sf.write(temp_audio, audio_numpy, sample_rate)
             audio_file_path = temp_audio
         else:
@@ -1175,15 +1190,26 @@ class LipsyncEngine:
             ]
             print(f"  메타데이터 저장: {text[:30]}...")
 
+        # 해상도별 비트레이트 설정 (파일 크기 축소 + 웹 스트리밍 최적화)
+        RESOLUTION_BITRATES = {
+            '720p': {'video': '2000k', 'maxrate': '2500k', 'bufsize': '4000k', 'cq': '30'},
+            '480p': {'video': '1200k', 'maxrate': '1500k', 'bufsize': '2400k', 'cq': '32'},
+            '360p': {'video': '700k', 'maxrate': '900k', 'bufsize': '1400k', 'cq': '34'},
+        }
+        bitrate_config = RESOLUTION_BITRATES.get(resolution, RESOLUTION_BITRATES['720p'])
+        print(f"  비트레이트 설정: {resolution} → {bitrate_config['video']} (max:{bitrate_config['maxrate']})")
+
         # 포맷에 따라 인코딩 방식 선택
         if output_format == "webm":
             # WebM 인코딩 - GPU (AV1 NVENC) 우선, CPU (VP9) 폴백
+            # 원본 MuseTalk 방식: 오디오 먼저 입력 + 비디오 FPS 명시
             # AV1 NVENC 시도 (RTX 40/50 시리즈 지원)
             print(f"  WebM 인코딩 시도 중 (AV1 NVENC)...")
             ffmpeg_cmd_av1 = [
                 'ffmpeg', '-y',
+                '-i', audio_file_path,  # 오디오 먼저 (원본 MuseTalk 방식)
+                '-r', str(int(fps)),    # 입력 비디오 FPS 명시
                 '-i', temp_video,
-                '-i', audio_file_path,
             ]
             # 비디오 필터: 마지막 프레임 연장 (오디오 길이에 맞춤)
             vf_parts = [f'tpad=stop_mode=clone:stop_duration={tpad_duration:.2f}']
@@ -1192,14 +1218,17 @@ class LipsyncEngine:
             if crop_filter:
                 vf_parts.append(crop_filter)
             ffmpeg_cmd_av1.extend(['-vf', ','.join(vf_parts)])
-            # adelay 제거 - 원본 MuseTalk에는 오디오 지연 없음
             ffmpeg_cmd_av1.extend(metadata_args)
             ffmpeg_cmd_av1.extend([
+                '-map', '1:v',           # 비디오는 두 번째 입력에서
+                '-map', '0:a',           # 오디오는 첫 번째 입력에서
                 '-c:v', 'av1_nvenc',     # AV1 NVENC (GPU 인코딩)
                 '-preset', 'p1',          # 가장 빠른 프리셋
-                '-cq', '30',              # 품질 수준
+                '-cq', bitrate_config['cq'],  # 해상도별 품질
+                '-b:v', bitrate_config['video'],  # 비트레이트
+                '-maxrate', bitrate_config['maxrate'],  # 최대 비트레이트
                 '-c:a', 'libopus',        # Opus 오디오
-                '-b:a', '128k',
+                '-b:a', '96k',            # 오디오 비트레이트 최적화
                 final_video
             ])
             av1_result = subprocess.run(ffmpeg_cmd_av1, capture_output=True)
@@ -1209,26 +1238,29 @@ class LipsyncEngine:
                 print(f"  AV1 NVENC 실패, VP9 CPU 인코딩으로 폴백...")
                 ffmpeg_cmd_vp9 = [
                     'ffmpeg', '-y',
+                    '-i', audio_file_path,  # 오디오 먼저
+                    '-r', str(int(fps)),    # 입력 비디오 FPS 명시
                     '-i', temp_video,
-                    '-i', audio_file_path,
                 ]
-                # 비디오 필터: 마지막 프레임 150ms 연장
+                # 비디오 필터: 마지막 프레임 연장
                 vf_parts = [f'tpad=stop_mode=clone:stop_duration={tpad_duration:.2f}']
                 if scale_filter:
                     vf_parts.append(scale_filter)
                 if crop_filter:
                     vf_parts.append(crop_filter)
                 ffmpeg_cmd_vp9.extend(['-vf', ','.join(vf_parts)])
-                # adelay 제거 - 원본 MuseTalk에는 오디오 지연 없음
                 ffmpeg_cmd_vp9.extend(metadata_args)
                 ffmpeg_cmd_vp9.extend([
+                    '-map', '1:v',           # 비디오는 두 번째 입력에서
+                    '-map', '0:a',           # 오디오는 첫 번째 입력에서
                     '-c:v', 'libvpx-vp9',   # VP9 코덱
-                    '-crf', '30',            # 품질
-                    '-b:v', '0',             # CRF 모드
+                    '-crf', bitrate_config['cq'],  # 해상도별 품질
+                    '-b:v', bitrate_config['video'],  # 비트레이트 제한
+                    '-maxrate', bitrate_config['maxrate'],  # 최대 비트레이트
                     '-cpu-used', '4',        # 빠른 인코딩
                     '-row-mt', '1',          # 멀티스레드
                     '-c:a', 'libopus',
-                    '-b:a', '128k',
+                    '-b:a', '96k',           # 오디오 비트레이트 최적화
                     final_video
                 ])
                 vp9_result = subprocess.run(ffmpeg_cmd_vp9, capture_output=True)
@@ -1240,11 +1272,13 @@ class LipsyncEngine:
                 print("  WebM (AV1 NVENC GPU) 인코딩 완료")
         else:
             # MP4 (H.264) 인코딩 - GPU 우선, CPU 폴백
+            # 원본 MuseTalk 방식: 오디오 먼저 입력 + 비디오 FPS 명시
             # GPU 인코딩 시도 (NVENC)
             ffmpeg_cmd = [
                 'ffmpeg', '-y',
+                '-i', audio_file_path,  # 오디오 먼저 (원본 MuseTalk 방식)
+                '-r', str(int(fps)),    # 입력 비디오 FPS 명시 (cv2.VideoWriter 메타데이터 보정)
                 '-i', temp_video,
-                '-i', audio_file_path,
             ]
 
             # 비디오 필터: 마지막 프레임 연장 (오디오 길이에 맞춤)
@@ -1254,18 +1288,24 @@ class LipsyncEngine:
             if crop_filter:
                 vf_parts.append(crop_filter)
             ffmpeg_cmd.extend(['-vf', ','.join(vf_parts)])
-            # adelay 제거 - 원본 MuseTalk에는 오디오 지연 없음
 
             # 메타데이터 추가
             ffmpeg_cmd.extend(metadata_args)
 
             ffmpeg_cmd.extend([
+                '-map', '1:v',         # 비디오는 두 번째 입력에서
+                '-map', '0:a',         # 오디오는 첫 번째 입력에서
                 '-c:v', 'h264_nvenc',  # NVIDIA GPU 인코더
                 '-preset', 'p1',       # 가장 빠른 프리셋 (p1=fastest, p7=slowest)
                 '-tune', 'ull',        # Ultra Low Latency 튜닝
                 '-rc', 'vbr',          # 가변 비트레이트
-                '-cq', '28',           # 품질 수준 (낮을수록 고품질)
+                '-cq', bitrate_config['cq'],  # 해상도별 품질
+                '-b:v', bitrate_config['video'],  # 비트레이트
+                '-maxrate', bitrate_config['maxrate'],  # 최대 비트레이트
+                '-bufsize', bitrate_config['bufsize'],  # 버퍼 크기
                 '-c:a', 'aac',
+                '-b:a', '96k',         # 오디오 비트레이트 최적화
+                '-movflags', '+faststart',  # 웹 스트리밍 최적화 (moov 앞으로)
                 final_video
             ])
 
@@ -1276,21 +1316,30 @@ class LipsyncEngine:
                 print("  NVENC 실패, CPU 인코딩 사용")
                 ffmpeg_cmd_cpu = [
                     'ffmpeg', '-y',
+                    '-i', audio_file_path,  # 오디오 먼저
+                    '-r', str(int(fps)),    # 입력 비디오 FPS 명시
                     '-i', temp_video,
-                    '-i', audio_file_path,
                 ]
-                # 비디오 필터: 마지막 프레임 150ms 연장
+                # 비디오 필터: 마지막 프레임 연장
                 vf_parts = [f'tpad=stop_mode=clone:stop_duration={tpad_duration:.2f}']
                 if scale_filter:
                     vf_parts.append(scale_filter)
+                if crop_filter:
+                    vf_parts.append(crop_filter)
                 ffmpeg_cmd_cpu.extend(['-vf', ','.join(vf_parts)])
-                # adelay 제거 - 원본 MuseTalk에는 오디오 지연 없음
                 # 메타데이터 추가
                 ffmpeg_cmd_cpu.extend(metadata_args)
                 ffmpeg_cmd_cpu.extend([
+                    '-map', '1:v',         # 비디오는 두 번째 입력에서
+                    '-map', '0:a',         # 오디오는 첫 번째 입력에서
                     '-c:v', 'libx264',
                     '-preset', 'ultrafast',  # 가장 빠른 CPU 프리셋
+                    '-crf', bitrate_config['cq'],  # 해상도별 품질
+                    '-maxrate', bitrate_config['maxrate'],  # 최대 비트레이트
+                    '-bufsize', bitrate_config['bufsize'],  # 버퍼 크기
                     '-c:a', 'aac',
+                    '-b:a', '96k',         # 오디오 비트레이트 최적화
+                    '-movflags', '+faststart',  # 웹 스트리밍 최적화
                     final_video
                 ])
                 subprocess.run(ffmpeg_cmd_cpu, capture_output=True)
@@ -1431,9 +1480,18 @@ class LipsyncEngine:
             extended_latent_list.append(latent)
             selected_whisper_chunks.append(whisper_chunks[i])
 
+        # 아바타 영상 전체 프레임 수
+        avatar_frames_count = len(frames_list)
+        print(f"[스트리밍 아바타 영상] {avatar_frames_count} 프레임 ({avatar_frames_count/fps:.1f}초)")
+
+        # 전체 출력 프레임 수 (립싱크 + 남은 원본 영상)
+        total_output_frames = max(num_frames, avatar_frames_count)
+        audio_frames = num_frames  # 오디오 기반 립싱크 프레임 수
+
         # 스트리밍 시작 신호
         emit_callback('stream_start', {
-            'total_frames': num_frames,
+            'total_frames': total_output_frames,
+            'audio_frames': audio_frames,  # 클라이언트에서 오디오 종료 후 남은 프레임 계속 재생용
             'fps': fps,
             'elapsed': time.time() - start_time
         }, to=sid)
@@ -1443,10 +1501,6 @@ class LipsyncEngine:
 
         # 페이드 프레임 수
         fade_frames = min(8, num_frames // 4)
-
-        # 아바타 영상 길이 (new_talk_short=5초, new_talk_long=10초)
-        avatar_frames_count = len(frames_list)
-        print(f"[스트리밍 아바타 영상] {avatar_frames_count} 프레임 ({avatar_frames_count/fps:.1f}초)")
 
         # idle 프레임 (첫 프레임) - 시작/끝 전환용
         idle_frame = frames_list[0].copy()
@@ -1464,21 +1518,24 @@ class LipsyncEngine:
         batch_idx = 0
 
         for whisper_batch, latent_batch in gen:
-            # UNet 추론
-            latent_batch = latent_batch.to(dtype=self.weight_dtype)
+            # PE 적용
+            audio_feature_batch = self.pe(whisper_batch)
 
             with torch.no_grad():
                 if self.use_tensorrt:
-                    pred_latents = self.unet_session.run(
-                        None,
-                        {
-                            "sample": latent_batch.cpu().numpy(),
-                            "audio_embedding": whisper_batch.cpu().numpy()
-                        }
-                    )[0]
-                    pred_latents = torch.from_numpy(pred_latents).to(self.device)
+                    latent_batch = latent_batch.to(dtype=self.weight_dtype)
+                    pred_latents = self.unet_trt(
+                        latent_batch,
+                        self.timesteps,
+                        audio_feature_batch
+                    ).sample
                 else:
-                    pred_latents = self.unet(latent_batch, whisper_batch)
+                    latent_batch = latent_batch.to(dtype=self.unet.model.dtype)
+                    pred_latents = self.unet.model(
+                        latent_batch,
+                        self.timesteps,
+                        encoder_hidden_states=audio_feature_batch
+                    ).sample
 
             # VAE 디코딩
             recon_frames = self.vae.decode_latents(pred_latents)
@@ -1567,12 +1624,30 @@ class LipsyncEngine:
                 'fps': fps
             }, to=sid)
 
+        # 립싱크 후 남은 원본 영상 프레임 전송 (입 다물기 자연 전환)
+        if num_frames < avatar_frames_count:
+            remaining_count = avatar_frames_count - num_frames
+            print(f"[스트리밍] 남은 원본 프레임 전송: {num_frames} ~ {avatar_frames_count-1} ({remaining_count}프레임, {remaining_count/fps:.1f}초)")
+
+            for i in range(num_frames, avatar_frames_count):
+                original_frame = frames_list[i].copy()
+                _, buffer = cv2.imencode('.jpg', original_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                frame_base64 = base64.b64encode(buffer).decode('utf-8')
+
+                emit_callback('stream_frame', {
+                    'frame': frame_base64,
+                    'index': i,
+                    'total': total_output_frames,
+                    'fps': fps
+                }, to=sid)
+
         lipsync_timing['blending_send'] = time.time() - step_start
 
         # 완료 신호
         elapsed = time.time() - start_time
         emit_callback('stream_complete', {
-            'total_frames': num_frames,
+            'total_frames': total_output_frames,
+            'audio_frames': audio_frames,
             'elapsed': elapsed,
             'fps': fps
         }, to=sid)
@@ -1707,12 +1782,17 @@ class LipsyncEngine:
         return blended_frames
 
 
-# TTS 엔진 설정 - CosyVoice (기본) + ElevenLabs
+# TTS 엔진 설정 - CosyVoice (기본) + Qwen3-TTS + ElevenLabs
 TTS_ENGINES = {
     'cosyvoice': {
         'name': 'CosyVoice (로컬 서버)',
         'voices': ['default'],
         'default': True
+    },
+    'qwen3tts': {
+        'name': 'Qwen3-TTS (음성 클론)',
+        'voices': ['clone_0.6b', 'clone_1.7b'],
+        'default': False
     },
     'elevenlabs': {
         'name': 'ElevenLabs',
@@ -1777,6 +1857,11 @@ def parse_quality_params(data):
 # API 설정
 ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY', '')
 COSYVOICE_API_URL = os.getenv('COSYVOICE_API_URL', 'http://172.16.10.200:5000')
+
+# Qwen3-TTS 설정
+QWEN3_TTS_API_URL = os.getenv('QWEN3_TTS_API_URL', 'http://172.16.10.200:8000')
+QWEN3_TTS_REF_AUDIO = os.getenv('QWEN3_TTS_REF_AUDIO', 'c:/Qwen3-TTS/sample(1).mp3')
+QWEN3_TTS_REF_TEXT = os.getenv('QWEN3_TTS_REF_TEXT', '안녕하세요. 오늘 저의 면접에 참석해 주셔서 감사합니다. 저는 박현준 팀장입니다.')
 
 # HTTP 세션 풀링 (Keep-Alive 연결 재사용)
 import requests
@@ -1910,6 +1995,16 @@ def api_audios():
     return jsonify(audios)
 
 
+@app.route('/api/tts_cache_clear', methods=['POST'])
+def api_tts_cache_clear():
+    """TTS 캐시 클리어 API"""
+    global tts_audio_cache
+    count = len(tts_audio_cache)
+    tts_audio_cache = {}
+    print(f"[TTS] 캐시 클리어 ({count}개 항목 삭제)")
+    return jsonify({"success": True, "cleared": count})
+
+
 @app.route('/api/tts_engines')
 def api_tts_engines():
     """TTS 엔진 목록 API"""
@@ -1923,6 +2018,13 @@ def api_tts_engines():
                 response = tts_http_session.get(COSYVOICE_API_URL, timeout=2)
                 # 서버가 응답하면 가용 (상태코드와 관계없이 연결 성공이면 OK)
                 available = True
+            except:
+                available = False
+        elif engine_id == 'qwen3tts':
+            # Qwen3-TTS 서버 연결 가능 여부 확인
+            try:
+                response = tts_http_session.get(f"{QWEN3_TTS_API_URL}/health", timeout=2)
+                available = response.status_code == 200
             except:
                 available = False
         elif engine_id == 'elevenlabs':
@@ -1960,6 +2062,157 @@ def api_check_cosyvoice():
         result['error'] = str(e)
 
     return jsonify(result)
+
+
+# ===== LLM 채팅 API =====
+@app.route('/api/chat', methods=['POST'])
+def api_chat():
+    """
+    LLM 채팅 API
+    - Primary: LLM_API_URL (커스텀 LLM 서버)
+    - Fallback: OpenAI API
+
+    Request:
+        {
+            "message": "사용자 메시지",
+            "sid": "클라이언트 세션 ID",
+            "system_prompt": "시스템 프롬프트 (선택)",
+            "clear_history": false  // true면 대화 히스토리 초기화
+        }
+
+    Response:
+        {
+            "success": true,
+            "response": "AI 응답 메시지",
+            "provider": "llm" or "openai"
+        }
+    """
+    data = request.json or {}
+    message = data.get('message', '').strip()
+    sid = data.get('sid', 'default')
+    system_prompt = data.get('system_prompt', '당신은 친절하고 전문적인 AI 면접관입니다. 면접자의 답변에 대해 적절한 후속 질문을 하거나 피드백을 제공합니다. 응답은 2-3문장 정도로 간결하게 유지하세요.')
+    clear_history = data.get('clear_history', False)
+
+    if not message:
+        return jsonify({'success': False, 'error': '메시지가 비어있습니다'}), 400
+
+    # 대화 히스토리 관리
+    if clear_history or sid not in conversation_histories:
+        conversation_histories[sid] = []
+
+    # 사용자 메시지 추가
+    conversation_histories[sid].append({'role': 'user', 'content': message})
+
+    # 대화 히스토리 제한 (최근 10개 메시지만 유지)
+    if len(conversation_histories[sid]) > 20:
+        conversation_histories[sid] = conversation_histories[sid][-20:]
+
+    # 메시지 구성
+    messages = [{'role': 'system', 'content': system_prompt}] + conversation_histories[sid]
+
+    response_text = None
+    provider_used = None
+
+    def _clean_llm_response(text):
+        """LLM 응답에서 <think>...</think> 태그 등 불필요한 태그 제거"""
+        import re
+        if not text:
+            return text
+        # <think>...</think> 태그 제거 (Qwen3 모델의 thinking 출력)
+        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        # 기타 마크다운/HTML 태그 정리
+        text = re.sub(r'<\|im_end\|>', '', text)
+        text = re.sub(r'<\|im_start\|>.*', '', text)
+        return text.strip()
+
+    # 1차 시도: 커스텀 LLM 서버
+    if LLM_API_URL and LLM_API_KEY:
+        try:
+            print(f"[LLM] 커스텀 서버 호출: {LLM_API_URL}")
+            headers = {
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {LLM_API_KEY}'
+            }
+            payload = {
+                'model': LLM_MODEL,
+                'messages': messages,
+                'temperature': LLM_TEMPERATURE,
+                'max_tokens': LLM_MAX_TOKENS
+            }
+
+            resp = requests.post(LLM_API_URL, headers=headers, json=payload, timeout=30)
+            resp.raise_for_status()
+
+            result = resp.json()
+            raw_text = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+            response_text = _clean_llm_response(raw_text)
+            if response_text and response_text.strip():
+                provider_used = 'llm'
+                print(f"[LLM] 커스텀 서버 응답 성공: {response_text[:50]}...")
+            else:
+                print(f"[LLM] 커스텀 서버 응답이 비어있음 - 폴백 시도")
+                response_text = None
+
+        except Exception as e:
+            print(f"[LLM] 커스텀 서버 실패: {e}")
+
+    # 2차 시도: OpenAI 폴백
+    if not response_text and OPENAI_API_KEY:
+        try:
+            print(f"[LLM] OpenAI 폴백 사용")
+            headers = {
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {OPENAI_API_KEY}'
+            }
+            payload = {
+                'model': OPENAI_MODEL,
+                'messages': messages,
+                'temperature': LLM_TEMPERATURE,
+                'max_tokens': LLM_MAX_TOKENS
+            }
+
+            resp = requests.post('https://api.openai.com/v1/chat/completions', headers=headers, json=payload, timeout=30)
+            resp.raise_for_status()
+
+            result = resp.json()
+            raw_text = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+            response_text = _clean_llm_response(raw_text)
+            provider_used = 'openai'
+            print(f"[LLM] OpenAI 응답 성공: {response_text[:50]}...")
+
+        except Exception as e:
+            print(f"[LLM] OpenAI 실패: {e}")
+            return jsonify({
+                'success': False,
+                'error': f'LLM 서비스 사용 불가: {str(e)}'
+            }), 500
+
+    if not response_text:
+        return jsonify({
+            'success': False,
+            'error': 'LLM 서비스가 설정되지 않았습니다. .env 파일에 LLM_API_URL 또는 OPENAI_API_KEY를 설정하세요.'
+        }), 500
+
+    # AI 응답을 히스토리에 추가
+    conversation_histories[sid].append({'role': 'assistant', 'content': response_text})
+
+    return jsonify({
+        'success': True,
+        'response': response_text,
+        'provider': provider_used
+    })
+
+
+@app.route('/api/chat/clear', methods=['POST'])
+def api_chat_clear():
+    """대화 히스토리 초기화"""
+    data = request.json or {}
+    sid = data.get('sid', 'default')
+
+    if sid in conversation_histories:
+        del conversation_histories[sid]
+
+    return jsonify({'success': True, 'message': '대화 히스토리가 초기화되었습니다.'})
 
 
 @app.route('/api/queue_status')
@@ -2312,7 +2565,14 @@ def trim_audio_silence(audio_data, sample_rate=16000, threshold_db=-50, min_sile
     silence_start = len(audio_data)
     consecutive_silence = 0
 
+    # 최대 트리밍 비율: 전체 오디오의 30%까지만 트리밍 허용
+    max_trim_samples = int(len(audio_data) * 0.3)
+
     for i in range(len(audio_data) - window_size, 0, -window_size):
+        # 검사 범위가 최대 트리밍 한도를 넘으면 중단
+        if (len(audio_data) - i) > max_trim_samples:
+            break
+
         window = audio_data[i:i + window_size]
         rms = np.sqrt(np.mean(window ** 2))
 
@@ -2603,16 +2863,177 @@ def generate_tts_audio_streaming(text, engine, voice, chunk_callback, output_pat
             if output_path:
                 sf.write(str(output_path), final_audio, original_sr)
 
-            # 캐시에 저장 (원본 샘플레이트로 저장 - audio_processor에서 리샘플링 처리)
-            if len(tts_audio_cache) >= TTS_CACHE_MAX_SIZE:
-                oldest_key = min(tts_audio_cache.keys(), key=lambda k: tts_audio_cache[k][2])
-                del tts_audio_cache[oldest_key]
-            tts_audio_cache[cache_key] = (final_audio.copy(), original_sr, time.time())
-            print(f"[TTS] 캐시 저장 (key={cache_key[:8]}..., 현재 캐시 크기={len(tts_audio_cache)})")
+            # 캐시에 저장 (오디오 길이 검증 후)
+            audio_duration_for_cache = len(final_audio) / original_sr
+            expected_min_duration = len(text) / 10.0  # 한국어 기준 최소 예상 길이
+            if audio_duration_for_cache >= expected_min_duration:
+                if len(tts_audio_cache) >= TTS_CACHE_MAX_SIZE:
+                    oldest_key = min(tts_audio_cache.keys(), key=lambda k: tts_audio_cache[k][2])
+                    del tts_audio_cache[oldest_key]
+                tts_audio_cache[cache_key] = (final_audio.copy(), original_sr, time.time())
+                print(f"[TTS] 캐시 저장 (key={cache_key[:8]}..., 길이={audio_duration_for_cache:.2f}초, 현재 캐시 크기={len(tts_audio_cache)})")
+            else:
+                print(f"[TTS] 캐시 저장 스킵 - 오디오 너무 짧음 ({audio_duration_for_cache:.2f}초 < 예상 최소 {expected_min_duration:.2f}초, 텍스트 {len(text)}자)")
 
             elapsed = time.time() - start_time
             print(f"[CosyVoice] 전체 TTS 완료 (총 {len(text_chunks)}개 청크, 병렬 처리, 시간: {elapsed:.2f}초, 길이: {len(final_audio)/original_sr:.2f}초)")
             # 원본 샘플레이트로 반환 (audio_processor에서 16kHz로 리샘플링됨)
+            return (final_audio, original_sr)
+
+        return None
+
+    elif engine == 'qwen3tts':
+        # Qwen3-TTS 음성 클론 (병렬 처리 + Keep-Alive 연결 재사용)
+        import base64
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        # voice에서 모델 크기 추출: 'clone_0.6b' → '0.6b', 'clone_1.7b' → '1.7b'
+        model_size = voice.replace('clone_', '') if voice.startswith('clone_') else '0.6b'
+
+        start_time = time.time()
+
+        def fetch_qwen3tts_chunk(chunk_idx, text_chunk, max_retries=3):
+            """단일 청크 Qwen3-TTS 요청 (병렬 처리용)"""
+            expected_min_duration = len(text_chunk) / 10.0
+
+            for attempt in range(max_retries):
+                try:
+                    payload = {
+                        "text": text_chunk,
+                        "language": "Auto",
+                        "ref_audio": QWEN3_TTS_REF_AUDIO,
+                        "ref_text": QWEN3_TTS_REF_TEXT
+                    }
+
+                    response = tts_http_session.post(
+                        f"{QWEN3_TTS_API_URL}/tts/voice_clone?model_size={model_size}",
+                        json=payload,
+                        timeout=300
+                    )
+
+                    if response.status_code == 200:
+                        content_type = response.headers.get('content-type', '')
+
+                        if 'audio' in content_type:
+                            wav_data = response.content
+                        else:
+                            result = response.json()
+                            if 'audio' in result:
+                                wav_data = base64.b64decode(result['audio'])
+                            else:
+                                print(f"[Qwen3-TTS] 청크 {chunk_idx + 1} 예상치 못한 응답")
+                                if attempt < max_retries - 1:
+                                    time.sleep(1.0 * (attempt + 1))
+                                    continue
+                                return (chunk_idx, None, None, "Unexpected response format")
+
+                        if len(wav_data) < 1000:
+                            print(f"[Qwen3-TTS] 청크 {chunk_idx + 1} 재시도 {attempt + 1}/{max_retries}: 오디오 너무 작음")
+                            time.sleep(0.5 * (attempt + 1))
+                            continue
+
+                        wav_buffer = io.BytesIO(wav_data)
+                        audio_data, sr = sf.read(wav_buffer)
+
+                        if len(audio_data.shape) > 1:
+                            audio_data = audio_data.mean(axis=1)
+
+                        actual_duration = len(audio_data) / sr
+                        if actual_duration < expected_min_duration and attempt < max_retries - 1:
+                            print(f"[Qwen3-TTS] 청크 {chunk_idx + 1} 재시도: 오디오 너무 짧음 ({actual_duration:.2f}초)")
+                            time.sleep(0.5 * (attempt + 1))
+                            continue
+
+                        return (chunk_idx, audio_data.astype(np.float32), sr, None)
+                    else:
+                        print(f"[Qwen3-TTS] 청크 {chunk_idx + 1} HTTP 오류: {response.status_code}")
+                        if attempt < max_retries - 1:
+                            time.sleep(1.0 * (attempt + 1))
+                            continue
+                        return (chunk_idx, None, None, f"HTTP {response.status_code}")
+
+                except requests.exceptions.Timeout:
+                    print(f"[Qwen3-TTS] 청크 {chunk_idx + 1} 타임아웃 (시도 {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        time.sleep(2.0 * (attempt + 1))
+                        continue
+                    return (chunk_idx, None, None, "Timeout")
+                except Exception as e:
+                    print(f"[Qwen3-TTS] 청크 {chunk_idx + 1} 오류 (시도 {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(1.0 * (attempt + 1))
+                        continue
+                    return (chunk_idx, None, None, str(e))
+
+            return (chunk_idx, None, None, "Max retries exceeded")
+
+        # 병렬 TTS 요청 (Qwen3-TTS는 GPU 리소스 고려하여 최대 1개씩 순차 처리)
+        max_parallel = 1
+        results = [None] * len(text_chunks)
+        sample_rates = [None] * len(text_chunks)
+        failed = False
+
+        print(f"[Qwen3-TTS] {len(text_chunks)}개 청크 처리 시작 (model={model_size})")
+
+        with ThreadPoolExecutor(max_workers=max_parallel) as executor:
+            futures = {
+                executor.submit(fetch_qwen3tts_chunk, idx, chunk): idx
+                for idx, chunk in enumerate(text_chunks)
+            }
+
+            for future in as_completed(futures):
+                chunk_idx, audio_data, sr, error = future.result()
+
+                if error:
+                    print(f"[Qwen3-TTS] 청크 {chunk_idx + 1} 실패: {error}")
+                    failed = True
+                    break
+                else:
+                    results[chunk_idx] = audio_data
+                    sample_rates[chunk_idx] = sr
+                    print(f"[Qwen3-TTS] 청크 {chunk_idx + 1}/{len(text_chunks)} 완료 (길이: {len(audio_data)/sr:.2f}초, {sr}Hz)")
+
+        if failed:
+            print("[TTS] Qwen3-TTS 실패 → CosyVoice로 폴백합니다...")
+            return generate_tts_audio_streaming(text, 'cosyvoice', 'default', chunk_callback, output_path)
+
+        original_sr = sample_rates[0] if sample_rates[0] else 24000
+
+        for chunk_idx, audio_numpy in enumerate(results):
+            if audio_numpy is None:
+                continue
+
+            is_last_chunk = (chunk_idx == len(results) - 1)
+            all_audio_chunks.append(audio_numpy)
+
+            chunk_wav_buffer = io.BytesIO()
+            sf.write(chunk_wav_buffer, audio_numpy, original_sr, format='WAV')
+            chunk_wav_buffer.seek(0)
+            chunk_base64 = base64.b64encode(chunk_wav_buffer.read()).decode('utf-8')
+            chunk_callback(chunk_base64, original_sr, is_last_chunk)
+
+        if all_audio_chunks:
+            final_audio = np.concatenate(all_audio_chunks)
+            final_audio = trim_audio_silence(final_audio, original_sr)
+            chunk_callback("", original_sr, True)
+
+            if output_path:
+                sf.write(str(output_path), final_audio, original_sr)
+
+            # 캐시에 저장 (오디오 길이 검증 후)
+            audio_duration_for_cache = len(final_audio) / original_sr
+            expected_min_duration = len(text) / 10.0
+            if audio_duration_for_cache >= expected_min_duration:
+                if len(tts_audio_cache) >= TTS_CACHE_MAX_SIZE:
+                    oldest_key = min(tts_audio_cache.keys(), key=lambda k: tts_audio_cache[k][2])
+                    del tts_audio_cache[oldest_key]
+                tts_audio_cache[cache_key] = (final_audio.copy(), original_sr, time.time())
+                print(f"[TTS] 캐시 저장 (key={cache_key[:8]}..., 길이={audio_duration_for_cache:.2f}초, 현재 캐시 크기={len(tts_audio_cache)})")
+            else:
+                print(f"[TTS] 캐시 저장 스킵 - 오디오 너무 짧음 ({audio_duration_for_cache:.2f}초 < 예상 최소 {expected_min_duration:.2f}초, 텍스트 {len(text)}자)")
+
+            elapsed = time.time() - start_time
+            print(f"[Qwen3-TTS] 전체 TTS 완료 (총 {len(text_chunks)}개 청크, 시간: {elapsed:.2f}초, 길이: {len(final_audio)/original_sr:.2f}초)")
             return (final_audio, original_sr)
 
         return None
@@ -2739,12 +3160,17 @@ def generate_tts_audio_streaming(text, engine, voice, chunk_callback, output_pat
             if output_path:
                 sf.write(str(output_path), final_audio, original_sr)
 
-            # 캐시에 저장 (원본 샘플레이트로 저장 - audio_processor에서 리샘플링 처리)
-            if len(tts_audio_cache) >= TTS_CACHE_MAX_SIZE:
-                oldest_key = min(tts_audio_cache.keys(), key=lambda k: tts_audio_cache[k][2])
-                del tts_audio_cache[oldest_key]
-            tts_audio_cache[cache_key] = (final_audio.copy(), original_sr, time.time())
-            print(f"[TTS] 캐시 저장 (key={cache_key[:8]}..., 현재 캐시 크기={len(tts_audio_cache)})")
+            # 캐시에 저장 (오디오 길이 검증 후)
+            audio_duration_for_cache = len(final_audio) / original_sr
+            expected_min_duration = len(text) / 10.0
+            if audio_duration_for_cache >= expected_min_duration:
+                if len(tts_audio_cache) >= TTS_CACHE_MAX_SIZE:
+                    oldest_key = min(tts_audio_cache.keys(), key=lambda k: tts_audio_cache[k][2])
+                    del tts_audio_cache[oldest_key]
+                tts_audio_cache[cache_key] = (final_audio.copy(), original_sr, time.time())
+                print(f"[TTS] 캐시 저장 (key={cache_key[:8]}..., 길이={audio_duration_for_cache:.2f}초, 현재 캐시 크기={len(tts_audio_cache)})")
+            else:
+                print(f"[TTS] 캐시 저장 스킵 - 오디오 너무 짧음 ({audio_duration_for_cache:.2f}초 < 예상 최소 {expected_min_duration:.2f}초, 텍스트 {len(text)}자)")
 
             elapsed = time.time() - start_time
             print(f"[ElevenLabs] 전체 TTS 완료 (총 {len(text_chunks)}개 청크, 병렬 처리, 시간: {elapsed:.2f}초, 길이: {len(final_audio)/original_sr:.2f}초)")
@@ -2840,6 +3266,69 @@ def generate_tts_audio(text, engine, voice, output_path=None):
             print("[CosyVoice] 실패 → ElevenLabs 폴백")
             return generate_elevenlabs_tts(text, 'Custom', output_path)
 
+    elif engine == 'qwen3tts':
+        # Qwen3-TTS 음성 클론
+        import io
+        import soundfile as sf
+
+        model_size = voice.replace('clone_', '') if voice.startswith('clone_') else '0.6b'
+        MAX_CHUNK_LENGTH = 200
+
+        if len(text) > MAX_CHUNK_LENGTH:
+            print(f"[Qwen3-TTS] 긴 텍스트 ({len(text)}자) → 분할 처리")
+            text_chunks = split_text_into_sentences(text, min_chunk_length=50, max_chunk_length=MAX_CHUNK_LENGTH)
+            print(f"[Qwen3-TTS] {len(text_chunks)}개 청크로 분할: {[len(c) for c in text_chunks]}")
+
+            all_audio = []
+            final_sr = None
+
+            for i, chunk in enumerate(text_chunks):
+                print(f"[Qwen3-TTS] 청크 {i+1}/{len(text_chunks)}: {chunk[:30]}...")
+                chunk_result = _generate_qwen3tts_chunk(chunk, model_size)
+
+                if chunk_result:
+                    chunk_audio, chunk_sr = chunk_result
+                    all_audio.append(chunk_audio)
+                    final_sr = chunk_sr
+                else:
+                    print(f"[Qwen3-TTS] 청크 {i+1} 실패 → CosyVoice 폴백")
+                    return generate_tts_audio(text, 'cosyvoice', 'default', output_path)
+
+            if all_audio:
+                combined_audio = np.concatenate(all_audio)
+                before_trim = len(combined_audio)
+                combined_audio = trim_audio_silence(combined_audio, final_sr)
+                after_trim = len(combined_audio)
+                if before_trim != after_trim:
+                    print(f"[Qwen3-TTS] 트리밍: {before_trim/final_sr:.2f}초 → {after_trim/final_sr:.2f}초")
+
+                if output_path:
+                    sf.write(str(output_path), combined_audio, final_sr)
+
+                print(f"[Qwen3-TTS] TTS 최종 완료 (총 {len(text_chunks)}개 청크, 길이: {len(combined_audio)/final_sr:.2f}초)")
+                return (combined_audio, final_sr)
+            else:
+                return generate_tts_audio(text, 'cosyvoice', 'default', output_path)
+
+        # 짧은 텍스트는 단일 요청
+        result = _generate_qwen3tts_chunk(text, model_size)
+        if result:
+            audio_numpy, sr = result
+            before_trim = len(audio_numpy)
+            audio_numpy = trim_audio_silence(audio_numpy, sr)
+            after_trim = len(audio_numpy)
+            if before_trim != after_trim:
+                print(f"[Qwen3-TTS] 트리밍: {before_trim/sr:.2f}초 → {after_trim/sr:.2f}초")
+
+            if output_path:
+                sf.write(str(output_path), audio_numpy, sr)
+
+            print(f"[Qwen3-TTS] TTS 최종 완료 (길이: {len(audio_numpy)/sr:.2f}초, {sr}Hz)")
+            return (audio_numpy, sr)
+        else:
+            print("[Qwen3-TTS] 실패 → CosyVoice 폴백")
+            return generate_tts_audio(text, 'cosyvoice', 'default', output_path)
+
     elif engine == 'elevenlabs':
         # ElevenLabs TTS (비스트리밍 고품질)
         return generate_elevenlabs_tts(text, voice, output_path)
@@ -2923,6 +3412,104 @@ def _generate_cosyvoice_chunk(text, max_retries=3):
             return None
         except Exception as e:
             print(f"[CosyVoice] 오류 (시도 {attempt + 1}/{max_retries}): {e}")
+            import traceback
+            traceback.print_exc()
+            if attempt < max_retries - 1:
+                time.sleep(1.0 * (attempt + 1))
+                continue
+            return None
+
+    return None
+
+
+def _generate_qwen3tts_chunk(text, model_size='0.6b', max_retries=3):
+    """단일 텍스트 청크에 대한 Qwen3-TTS 음성 클론 요청"""
+    import io
+    import soundfile as sf
+
+    expected_min_duration = len(text) / 10.0
+
+    for attempt in range(max_retries):
+        start_time = time.time()
+
+        try:
+            payload = {
+                "text": text,
+                "language": "Auto",
+                "ref_audio": QWEN3_TTS_REF_AUDIO,
+                "ref_text": QWEN3_TTS_REF_TEXT
+            }
+
+            response = tts_http_session.post(
+                f"{QWEN3_TTS_API_URL}/tts/voice_clone?model_size={model_size}",
+                json=payload,
+                timeout=300
+            )
+
+            if response.status_code == 200:
+                content_type = response.headers.get('content-type', '')
+
+                if 'audio' in content_type:
+                    wav_data = response.content
+                else:
+                    # JSON 응답 (배열 텍스트인 경우)
+                    result = response.json()
+                    if 'audio' in result:
+                        import base64
+                        wav_data = base64.b64decode(result['audio'])
+                    else:
+                        print(f"[Qwen3-TTS] 예상치 못한 JSON 응답: {list(result.keys())}")
+                        if attempt < max_retries - 1:
+                            time.sleep(1.0 * (attempt + 1))
+                            continue
+                        return None
+
+                elapsed = time.time() - start_time
+                print(f"[Qwen3-TTS] TTS 완료 (시간: {elapsed:.2f}초, 크기: {len(wav_data)} bytes)")
+
+                if len(wav_data) < 1000:
+                    print(f"[Qwen3-TTS] 재시도 {attempt + 1}/{max_retries}: 오디오 데이터 너무 작음 ({len(wav_data)} bytes)")
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+
+                wav_buffer = io.BytesIO(wav_data)
+                audio_data, sr = sf.read(wav_buffer)
+
+                if len(audio_data.shape) > 1:
+                    audio_data = audio_data.mean(axis=1)
+
+                original_duration = len(audio_data) / sr
+                print(f"[Qwen3-TTS] 원본 오디오: {original_duration:.2f}초 ({sr}Hz, {len(audio_data)} samples)")
+
+                if original_duration < expected_min_duration and attempt < max_retries - 1:
+                    print(f"[Qwen3-TTS] 재시도 {attempt + 1}/{max_retries}: 오디오 너무 짧음 ({original_duration:.2f}초 < 예상 {expected_min_duration:.2f}초)")
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+
+                audio_numpy = audio_data.astype(np.float32)
+                return (audio_numpy, sr)
+
+            else:
+                print(f"[Qwen3-TTS] HTTP 오류: {response.status_code} - {response.text[:200]}")
+                if attempt < max_retries - 1:
+                    time.sleep(1.0 * (attempt + 1))
+                    continue
+                return None
+
+        except requests.exceptions.Timeout:
+            print(f"[Qwen3-TTS] 타임아웃 (시도 {attempt + 1}/{max_retries})")
+            if attempt < max_retries - 1:
+                time.sleep(2.0 * (attempt + 1))
+                continue
+            return None
+        except requests.exceptions.ConnectionError as e:
+            print(f"[Qwen3-TTS] 서버 연결 실패 (시도 {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2.0 * (attempt + 1))
+                continue
+            return None
+        except Exception as e:
+            print(f"[Qwen3-TTS] 오류 (시도 {attempt + 1}/{max_retries}): {e}")
             import traceback
             traceback.print_exc()
             if attempt < max_retries - 1:
@@ -3215,7 +3802,7 @@ def process_request_worker(request_data):
         print(f"[Worker-{request_id}] 오류: {e}")
         import traceback
         traceback.print_exc()
-        socketio.emit('error', {'message': str(e)}, to=sid)
+        socketio.emit('error', {'stage': '처리', 'message': str(e)}, to=sid)
     finally:
         generation_queue.complete_request(request_id)
         print(f"[Worker-{request_id}] 완료")
@@ -3268,8 +3855,10 @@ def select_avatar_by_audio_duration(audio_duration, avatar_path=None, frame_skip
     - 단일 아바타: 문자열 (경로)
     - 영상 조합: 리스트 [경로1, 경로2, ...]
     """
-    # 해상도별 프리컴퓨트 경로 (new_talk_short만 사용, 필요시 반복)
-    SHORT_AVATAR = _get_resolution_avatar("new_talk_short", resolution)
+    import random
+
+    # 랜덤 아바타 후보 (new_talk_short, new_talk_short2, new_talk_short3)
+    AVATAR_CANDIDATES = ["new_talk_short", "new_talk_short2", "new_talk_short3"]
     SHORT_DURATION = 5.0  # short 영상 길이
 
     # 명시적으로 아바타가 지정된 경우 - 해상도에 맞게 변환
@@ -3288,18 +3877,38 @@ def select_avatar_by_audio_duration(audio_duration, avatar_path=None, frame_skip
         if os.path.exists(avatar_path):
             return avatar_path
 
-    # 항상 new_talk_short 사용 (필요시 자동 반복)
-    loop_count = max(1, int(audio_duration / SHORT_DURATION) + 1)
-    print(f"[아바타 자동 선택] new_talk_short (5초) × {loop_count}회 반복 (오디오: {audio_duration:.2f}초)")
+    # 사용 가능한 아바타 찾기 (존재하는 파일만)
+    available_avatars = []
+    for candidate in AVATAR_CANDIDATES:
+        candidate_path = _get_resolution_avatar(candidate, resolution)
+        if os.path.exists(candidate_path):
+            available_avatars.append((candidate, candidate_path))
 
-    if not os.path.exists(SHORT_AVATAR):
-        # 폴백: 기본 경로
+    # 사용 가능한 아바타가 없으면 기본 폴백
+    if not available_avatars:
         fallback = "precomputed/new_talk_short_precomputed.pkl"
         if os.path.exists(fallback):
+            print(f"[아바타 자동 선택] 폴백: {fallback}")
             return fallback
-        print(f"  ⚠️ new_talk_short 파일 없음: {SHORT_AVATAR}")
+        print(f"  ⚠️ 사용 가능한 아바타 없음!")
+        return _get_resolution_avatar("new_talk_short", resolution)
 
-    return SHORT_AVATAR
+    # 오디오 길이에 따라 short(5초) 또는 long(10초) 선택
+    LONG_DURATION = 10.0
+    if audio_duration > SHORT_DURATION:
+        # 5초 초과 → new_talk_long (10초) 사용
+        long_path = _get_resolution_avatar("new_talk_long", resolution)
+        if os.path.exists(long_path):
+            print(f"[아바타 자동 선택] new_talk_long (10초) (오디오: {audio_duration:.2f}초)")
+            return long_path
+        print(f"  ⚠️ new_talk_long 없음, short로 폴백")
+
+    # 5초 이하 또는 long 없는 경우 → short 랜덤 선택
+    selected_name, selected_path = random.choice(available_avatars)
+    print(f"[아바타 자동 선택] {selected_name} (5초) (오디오: {audio_duration:.2f}초)")
+    print(f"  사용 가능한 아바타: {[a[0] for a in available_avatars]}")
+
+    return selected_path
 
 
 def _get_resolution_avatar(base_name, resolution="720p"):
@@ -3330,32 +3939,53 @@ _idle_frames_cache = {}
 def load_idle_video_frames(resolution="720p", use_short=False):
     """
     idle 영상에서 프레임 로드 (눈동자 움직임용)
+    idle_short, idle_short2, filemove, filemove2 중 랜덤 선택
 
     Args:
         resolution: 해상도 ("720p", "480p", "360p")
-        use_short: True면 idle_short (5초), False면 idle_long (10초) 사용
+        use_short: True면 short 타입 (5초), False면 idle_long (10초) 사용
 
     Returns:
         list: 프레임 리스트 (numpy arrays)
     """
+    import random
     global _idle_frames_cache
 
-    idle_type = "idle_short" if use_short else "idle_long"
-    cache_key = f"{resolution}_{idle_type}"
+    # 랜덤 idle 영상 후보 (use_short=True인 경우만 랜덤)
+    if use_short:
+        IDLE_CANDIDATES = ["idle_short", "idle_short2", "filemove", "filemove2"]
+    else:
+        IDLE_CANDIDATES = ["idle_long"]
+
+    # 사용 가능한 idle 영상 찾기
+    available_idles = []
+    for candidate in IDLE_CANDIDATES:
+        # 해상도별 경로 먼저 확인
+        res_path = f"assets/{resolution}/{candidate}.mp4"
+        if os.path.exists(res_path):
+            available_idles.append((candidate, res_path))
+        else:
+            # 기본 경로 확인
+            default_path = f"assets/{candidate}.mp4"
+            if os.path.exists(default_path):
+                available_idles.append((candidate, default_path))
+
+    if not available_idles:
+        print(f"[경고] 사용 가능한 idle 영상이 없습니다")
+        return None
+
+    # 랜덤 선택
+    selected_name, idle_video_path = random.choice(available_idles)
+
+    # 캐시 키는 선택된 영상 기준
+    cache_key = f"{resolution}_{selected_name}"
 
     if cache_key in _idle_frames_cache:
+        print(f"[idle 영상 캐시 히트] {selected_name}")
         return _idle_frames_cache[cache_key]
 
-    # 아바타 영상 길이에 맞는 idle 영상 선택 (5초 또는 10초)
-    idle_video_path = f"assets/{resolution}/{idle_type}.mp4"
-    if not os.path.exists(idle_video_path):
-        # 기본 경로로 폴백
-        idle_video_path = f"assets/{idle_type}.mp4"
-        if not os.path.exists(idle_video_path):
-            print(f"[경고] idle 영상을 찾을 수 없습니다: {idle_video_path}")
-            return None
-
-    print(f"[idle 영상 로드] {idle_video_path} ({'5초' if use_short else '10초'})")
+    print(f"[idle 영상 로드] {selected_name} → {idle_video_path}")
+    print(f"  사용 가능한 idle: {[i[0] for i in available_idles]}")
 
     frames = []
     cap = cv2.VideoCapture(idle_video_path)
@@ -3510,7 +4140,7 @@ def process_generation_request(request_data):
     tts_result = generate_tts_audio(text, tts_engine, tts_voice)
 
     if tts_result is None:
-        socketio.emit('error', {'message': f'TTS 생성 실패 ({engine_name})'}, to=sid)
+        socketio.emit('error', {'stage': 'TTS', 'message': f'TTS 생성 실패 ({engine_name})'}, to=sid)
         return
 
     audio_numpy, sample_rate = tts_result
@@ -3603,9 +4233,11 @@ def process_generation_request(request_data):
                 'native_height': native_height,  # 원본 영상 높이 (크롭 전)
                 'center_crop': True
             }
+        print(f"[완료] SID={sid}, video_url={complete_data.get('video_url')}")
         socketio.emit('complete', complete_data, to=sid)
     else:
-        socketio.emit('error', {'message': '립싱크 생성 실패'}, to=sid)
+        print(f"[실패] SID={sid}, 립싱크 생성 실패")
+        socketio.emit('error', {'stage': '립싱크', 'message': '립싱크 생성 실패'}, to=sid)
 
 
 @app.route('/api/cancel', methods=['POST'])
@@ -4050,7 +4682,7 @@ def api_generate_streaming():
             print(f"[성능측정] 1. TTS 생성: {timing_log['tts']:.2f}초 ({tts_engine})")
 
             if tts_result is None:
-                socketio.emit('error', {'message': f'TTS 생성 실패 ({engine_name})'}, to=sid)
+                socketio.emit('error', {'stage': 'TTS', 'message': f'TTS 생성 실패 ({engine_name})'}, to=sid)
                 return
 
             audio_numpy, sample_rate = tts_result
@@ -4118,7 +4750,7 @@ def api_generate_streaming():
         except Exception as e:
             import traceback
             traceback.print_exc()
-            socketio.emit('error', {'message': str(e)}, to=sid)
+            socketio.emit('error', {'stage': '스트리밍', 'message': str(e)}, to=sid)
         finally:
             if sid in client_sessions:
                 client_sessions[sid]['generating'] = False
@@ -4372,7 +5004,28 @@ if __name__ == '__main__':
     models_loaded = True
 
     print("\n프리로드 완료!")
-    print(f"\nURL: http://localhost:5000")
+
+    # 로컬 네트워크 IP 주소 가져오기
+    import socket
+    def get_local_ip():
+        try:
+            # 외부 연결을 시뮬레이션하여 로컬 IP 얻기
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+            return local_ip
+        except:
+            return "알 수 없음"
+
+    local_ip = get_local_ip()
+
+    print(f"\n" + "=" * 50)
+    print(f"서버 접속 주소:")
+    print(f"  - 로컬:    http://localhost:5000")
+    print(f"  - WiFi:    http://{local_ip}:5000")
+    if LIPSYNC_BASE_URL:
+        print(f"  - 외부:    {LIPSYNC_BASE_URL}")
     print("=" * 50)
 
     socketio.run(app, host='0.0.0.0', port=5000, debug=False)

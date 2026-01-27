@@ -111,3 +111,7 @@ api-keys.txt
 # 비밀 정보
 secrets/
 .secrets/
+
+# Temporary files
+tmpclaude-*
+nul

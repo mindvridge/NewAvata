@@ -33,6 +33,7 @@ venv/
 
 # Temp files
 nul
+tmpclaude-*
 temp_mmcv/
 *.tmp
 *.log

@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Server Dashboard - Realtime Lipsync Avatar</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #333;
+        }
+
+        .header h1 {
+            font-size: 1.5rem;
+            color: #4ecca3;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #4ecca3;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .card {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        .card-title {
+            font-size: 0.9rem;
+            color: #888;
+            margin-bottom: 15px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .metric-label {
+            color: #aaa;
+            font-size: 0.9rem;
+        }
+
+        .metric-value {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #4ecca3;
+        }
+
+        .metric-value.warning {
+            color: #ffc107;
+        }
+
+        .metric-value.danger {
+            color: #ff6b6b;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #333;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 5px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4ecca3, #45b393);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+
+        .progress-fill.warning {
+            background: linear-gradient(90deg, #ffc107, #e6ac00);
+        }
+
+        .progress-fill.danger {
+            background: linear-gradient(90deg, #ff6b6b, #e05555);
+        }
+
+        .gpu-card {
+            grid-column: span 2;
+        }
+
+        @media (max-width: 768px) {
+            .gpu-card {
+                grid-column: span 1;
+            }
+        }
+
+        .gpu-metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+        }
+
+        .gpu-metric-box {
+            background: #1a1a2e;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .gpu-metric-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #4ecca3;
+        }
+
+        .gpu-metric-label {
+            font-size: 0.8rem;
+            color: #888;
+            margin-top: 5px;
+        }
+
+        .process-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+
+        .process-table th {
+            text-align: left;
+            padding: 10px 8px;
+            border-bottom: 1px solid #333;
+            color: #888;
+            font-weight: normal;
+        }
+
+        .process-table td {
+            padding: 8px;
+            border-bottom: 1px solid #252525;
+        }
+
+        .process-table tr:hover {
+            background: #1a1a2e;
+        }
+
+        .process-name {
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .queue-status {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .queue-item {
+            background: #1a1a2e;
+            padding: 15px 25px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .queue-number {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #4ecca3;
+        }
+
+        .queue-label {
+            font-size: 0.8rem;
+            color: #888;
+            margin-top: 5px;
+        }
+
+        .refresh-info {
+            text-align: center;
+            color: #666;
+            font-size: 0.8rem;
+            margin-top: 20px;
+        }
+
+        .wide-card {
+            grid-column: 1 / -1;
+        }
+
+        .cpu-cores {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(60px, 1fr));
+            gap: 8px;
+            margin-top: 15px;
+        }
+
+        .cpu-core {
+            background: #1a1a2e;
+            padding: 8px;
+            border-radius: 6px;
+            text-align: center;
+        }
+
+        .cpu-core-label {
+            font-size: 0.7rem;
+            color: #666;
+        }
+
+        .cpu-core-value {
+            font-size: 0.9rem;
+            font-weight: bold;
+            color: #4ecca3;
+        }
+
+        .actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: #4ecca3;
+            color: #1a1a2e;
+        }
+
+        .btn-primary:hover {
+            background: #45b393;
+        }
+
+        .btn-danger {
+            background: #ff6b6b;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #e05555;
+        }
+
+        .error-message {
+            background: #ff6b6b22;
+            border: 1px solid #ff6b6b;
+            color: #ff6b6b;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Server Dashboard</h1>
+        <div class="status-indicator">
+            <div class="status-dot" id="statusDot"></div>
+            <span id="serverStatus">Connected</span>
+        </div>
+    </div>
+
+    <div id="errorContainer"></div>
+
+    <div class="grid">
+        <!-- GPU Card -->
+        <div class="card gpu-card">
+            <div class="card-title">GPU (NVIDIA)</div>
+            <div class="gpu-metrics">
+                <div class="gpu-metric-box">
+                    <div class="gpu-metric-value" id="gpuUtil">--%</div>
+                    <div class="gpu-metric-label">GPU Utilization</div>
+                </div>
+                <div class="gpu-metric-box">
+                    <div class="gpu-metric-value" id="gpuMemUsed">-- GB</div>
+                    <div class="gpu-metric-label">VRAM Used</div>
+                </div>
+                <div class="gpu-metric-box">
+                    <div class="gpu-metric-value" id="gpuMemTotal">-- GB</div>
+                    <div class="gpu-metric-label">VRAM Total</div>
+                </div>
+                <div class="gpu-metric-box">
+                    <div class="gpu-metric-value" id="gpuTemp">--°C</div>
+                    <div class="gpu-metric-label">Temperature</div>
+                </div>
+            </div>
+            <div class="progress-bar" style="margin-top: 15px;">
+                <div class="progress-fill" id="gpuMemBar" style="width: 0%"></div>
+            </div>
+        </div>
+
+        <!-- CPU Card -->
+        <div class="card">
+            <div class="card-title">CPU</div>
+            <div class="metric">
+                <span class="metric-label">Overall Usage</span>
+                <span class="metric-value" id="cpuTotal">--%</span>
+            </div>
+            <div class="progress-bar">
+                <div class="progress-fill" id="cpuBar" style="width: 0%"></div>
+            </div>
+            <div class="cpu-cores" id="cpuCores"></div>
+        </div>
+
+        <!-- Memory Card -->
+        <div class="card">
+            <div class="card-title">Memory (RAM)</div>
+            <div class="metric">
+                <span class="metric-label">Used / Total</span>
+                <span class="metric-value" id="memUsage">-- / -- GB</span>
+            </div>
+            <div class="progress-bar">
+                <div class="progress-fill" id="memBar" style="width: 0%"></div>
+            </div>
+            <div class="metric" style="margin-top: 15px;">
+                <span class="metric-label">Available</span>
+                <span class="metric-value" id="memAvailable">-- GB</span>
+            </div>
+        </div>
+
+        <!-- Queue Status Card -->
+        <div class="card">
+            <div class="card-title">Generation Queue</div>
+            <div class="queue-status">
+                <div class="queue-item">
+                    <div class="queue-number" id="queueProcessing">0</div>
+                    <div class="queue-label">Processing</div>
+                </div>
+                <div class="queue-item">
+                    <div class="queue-number" id="queueWaiting">0</div>
+                    <div class="queue-label">Waiting</div>
+                </div>
+                <div class="queue-item">
+                    <div class="queue-number" id="queueMax">3</div>
+                    <div class="queue-label">Max Concurrent</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Top Processes Card -->
+        <div class="card wide-card">
+            <div class="card-title">Top Processes (by CPU/Memory)</div>
+            <table class="process-table">
+                <thead>
+                    <tr>
+                        <th>PID</th>
+                        <th>Name</th>
+                        <th>CPU %</th>
+                        <th>Memory %</th>
+                        <th>Memory (MB)</th>
+                    </tr>
+                </thead>
+                <tbody id="processTable">
+                    <tr><td colspan="5">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="refresh-info">
+        Auto-refresh: <span id="refreshInterval">2</span>s | Last update: <span id="lastUpdate">--</span>
+    </div>
+
+    <script>
+        const REFRESH_INTERVAL = 2000; // 2 seconds
+
+        async function fetchSystemStatus() {
+            try {
+                const response = await fetch('/api/system_status');
+                if (!response.ok) throw new Error('Failed to fetch');
+                return await response.json();
+            } catch (error) {
+                console.error('Error fetching system status:', error);
+                return null;
+            }
+        }
+
+        function getColorClass(percent) {
+            if (percent >= 90) return 'danger';
+            if (percent >= 70) return 'warning';
+            return '';
+        }
+
+        function updateUI(data) {
+            if (!data) {
+                document.getElementById('statusDot').style.background = '#ff6b6b';
+                document.getElementById('serverStatus').textContent = 'Disconnected';
+                return;
+            }
+
+            document.getElementById('statusDot').style.background = '#4ecca3';
+            document.getElementById('serverStatus').textContent = 'Connected';
+            document.getElementById('errorContainer').innerHTML = '';
+
+            // GPU
+            if (data.gpu && !data.gpu.error) {
+                const gpuMemPercent = (data.gpu.memory_used_mb / data.gpu.memory_total_mb) * 100;
+                document.getElementById('gpuUtil').textContent = data.gpu.utilization_percent + '%';
+                document.getElementById('gpuMemUsed').textContent = (data.gpu.memory_used_mb / 1024).toFixed(1) + ' GB';
+                document.getElementById('gpuMemTotal').textContent = (data.gpu.memory_total_mb / 1024).toFixed(1) + ' GB';
+                document.getElementById('gpuTemp').textContent = (data.gpu.temperature || '--') + '°C';
+
+                const gpuMemBar = document.getElementById('gpuMemBar');
+                gpuMemBar.style.width = gpuMemPercent + '%';
+                gpuMemBar.className = 'progress-fill ' + getColorClass(gpuMemPercent);
+            }
+
+            // CPU
+            if (data.cpu) {
+                const cpuPercent = data.cpu.percent;
+                document.getElementById('cpuTotal').textContent = cpuPercent.toFixed(1) + '%';
+                document.getElementById('cpuTotal').className = 'metric-value ' + getColorClass(cpuPercent);
+
+                const cpuBar = document.getElementById('cpuBar');
+                cpuBar.style.width = cpuPercent + '%';
+                cpuBar.className = 'progress-fill ' + getColorClass(cpuPercent);
+
+                // CPU cores
+                if (data.cpu.per_core) {
+                    const coresHtml = data.cpu.per_core.map((percent, i) => `
+                        <div class="cpu-core">
+                            <div class="cpu-core-label">Core ${i}</div>
+                            <div class="cpu-core-value ${getColorClass(percent)}">${percent.toFixed(0)}%</div>
+                        </div>
+                    `).join('');
+                    document.getElementById('cpuCores').innerHTML = coresHtml;
+                }
+            }
+
+            // Memory
+            if (data.memory) {
+                const memPercent = data.memory.percent;
+                const usedGB = (data.memory.used / (1024 ** 3)).toFixed(1);
+                const totalGB = (data.memory.total / (1024 ** 3)).toFixed(1);
+                const availGB = (data.memory.available / (1024 ** 3)).toFixed(1);
+
+                document.getElementById('memUsage').textContent = `${usedGB} / ${totalGB} GB`;
+                document.getElementById('memUsage').className = 'metric-value ' + getColorClass(memPercent);
+                document.getElementById('memAvailable').textContent = availGB + ' GB';
+
+                const memBar = document.getElementById('memBar');
+                memBar.style.width = memPercent + '%';
+                memBar.className = 'progress-fill ' + getColorClass(memPercent);
+            }
+
+            // Queue
+            if (data.queue) {
+                document.getElementById('queueProcessing').textContent = data.queue.processing_count || 0;
+                document.getElementById('queueWaiting').textContent = data.queue.queue_length || 0;
+                document.getElementById('queueMax').textContent = data.queue.max_concurrent || 3;
+            }
+
+            // Processes
+            if (data.processes && data.processes.length > 0) {
+                const processHtml = data.processes.map(p => `
+                    <tr>
+                        <td>${p.pid}</td>
+                        <td class="process-name" title="${p.name}">${p.name}</td>
+                        <td class="${getColorClass(p.cpu_percent)}">${p.cpu_percent.toFixed(1)}%</td>
+                        <td class="${getColorClass(p.memory_percent)}">${p.memory_percent.toFixed(1)}%</td>
+                        <td>${(p.memory_mb).toFixed(0)} MB</td>
+                    </tr>
+                `).join('');
+                document.getElementById('processTable').innerHTML = processHtml;
+            }
+
+            // Update timestamp
+            document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
+        }
+
+        async function refresh() {
+            const data = await fetchSystemStatus();
+            updateUI(data);
+        }
+
+        // Initial load
+        refresh();
+
+        // Auto refresh
+        setInterval(refresh, REFRESH_INTERVAL);
+    </script>
+</body>
+</html>

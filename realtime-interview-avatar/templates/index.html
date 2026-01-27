@@ -669,10 +669,18 @@
                     <div class="form-group">
                         <label>응답 속도</label>
                         <select id="speedModeSelect">
-                            <option value="quality">고품질 (느림)</option>
+                            <option value="quality" selected>고품질 (느림)</option>
                             <option value="balanced">균형</option>
-                            <option value="fast" selected>빠른 응답 (권장)</option>
+                            <option value="fast">빠른 응답 (권장)</option>
                             <option value="realtime">실시간 (최저품질)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label>채팅 모드</label>
+                        <select id="chatModeSelect" onchange="updateChatModeUI()">
+                            <option value="direct" selected>직접 입력 (텍스트→립싱크)</option>
+                            <option value="chat">AI 대화 (LLM→립싱크)</option>
                         </select>
                     </div>
                 </div>
@@ -680,7 +688,7 @@
                 <div class="chat-container">
                     <div class="chat-messages" id="chatMessages">
                         <div class="chat-message system">
-                            "면접 시작" 버튼을 눌러 면접을 시작하세요
+                            서버에 연결 중입니다...
                         </div>
                     </div>
                     <!-- 예시 텍스트 선택 -->
@@ -701,17 +709,17 @@
                     </div>
                     <div class="chat-input-container">
                         <input type="text" class="chat-input" id="chatInput"
-                               placeholder="답변을 입력하세요..."
-                               onkeypress="handleKeyPress(event)">
-                        <button class="primary send-btn" id="sendBtn" onclick="sendMessage()">
-                            전송
+                               placeholder="서버 연결 중..."
+                               onkeypress="handleKeyPress(event)" disabled>
+                        <button class="primary send-btn" id="sendBtn" onclick="sendMessage()" disabled>
+                            연결 중...
                         </button>
                     </div>
                 </div>
 
                 <div class="button-group">
-                    <button class="primary" id="startInterviewBtn" onclick="startInterview()">
-                        면접 시작
+                    <button class="primary" id="startInterviewBtn" onclick="startInterview()" disabled>
+                        연결 중...
                     </button>
                     <button class="secondary" onclick="clearHistory()">
                         초기화
@@ -791,10 +799,11 @@
         let llmStartTime = null;
         let isVideoPlaying = false;  // 비디오 재생 중 플래그
         let isStreaming = false;  // 스트리밍 모드 플래그
-        let streamingMode = false;  // true: 스트리밍 모드, false: 기존 모드 (스트리밍 비활성화)
+        let streamingMode = true;  // true: 스트리밍 모드, false: 기존 모드
         let streamCtx = null;  // Canvas context
         let streamFps = 25;  // 스트리밍 FPS
         let clientSid = null;  // 클라이언트 세션 ID
+        let chatMode = 'direct';  // 'direct' 또는 'chat' (AI 대화)
 
         // 대기 중 영상 관련 변수 (idle_short 사용)
         let isWaitingVideoPlaying = false;  // 대기 영상 재생 중 플래그
@@ -889,6 +898,26 @@
         socket.on('connected', (data) => {
             clientSid = data.sid;
             console.log('Client SID:', clientSid);
+            // 연결 완료 시 UI 활성화
+            document.getElementById('chatInput').disabled = false;
+            document.getElementById('chatInput').placeholder = '답변을 입력하세요...';
+            document.getElementById('sendBtn').disabled = false;
+            document.getElementById('sendBtn').textContent = '전송';
+            document.getElementById('startInterviewBtn').disabled = false;
+            document.getElementById('startInterviewBtn').textContent = '면접 시작';
+            // 연결 안내 메시지 표시
+            const messagesDiv = document.getElementById('chatMessages');
+            messagesDiv.innerHTML = '<div class="chat-message system">서버 연결 완료! "면접 시작" 버튼을 눌러 면접을 시작하세요</div>';
+        });
+
+        // 연결 끊김 처리
+        socket.on('disconnect', () => {
+            console.log('Disconnected from server');
+            clientSid = null;
+            document.getElementById('chatInput').disabled = true;
+            document.getElementById('sendBtn').disabled = true;
+            document.getElementById('startInterviewBtn').disabled = true;
+            addMessage('system', '서버 연결이 끊어졌습니다. 페이지를 새로고침해주세요.');
         });
 
         // 큐 상태 업데이트
@@ -930,6 +959,7 @@
         });
 
         socket.on('complete', (data) => {
+            console.log('[complete 이벤트 수신]', data);
             isGenerating = false;
             updateUIState(false);
 
@@ -938,6 +968,8 @@
 
             if (data.total_time !== undefined) {
                 document.getElementById('elapsedTime').textContent = `완료: ${data.total_time.toFixed(1)}초`;
+            } else if (data.elapsed !== undefined) {
+                document.getElementById('elapsedTime').textContent = `완료: ${data.elapsed.toFixed(1)}초`;
             }
 
             // 이미 립싱크 비디오가 재생 중이면 무시 (중복 방지)
@@ -948,7 +980,17 @@
 
             const idleVideo = document.getElementById('idleVideo');
             const resultVideo = document.getElementById('resultVideo');
-            const videoUrl = data.video_url || '/video/output_with_audio.mp4';
+            // video_url이 전체 URL이면 상대 경로로 변환 (로컬 서버 접근용)
+            let videoUrl = data.video_url || '/video/output_with_audio.mp4';
+            if (videoUrl.includes('://')) {
+                try {
+                    const urlObj = new URL(videoUrl);
+                    videoUrl = urlObj.pathname;  // /video/xxx.mp4
+                    console.log('[video_url 변환] 전체 URL → 상대 경로:', videoUrl);
+                } catch (e) {
+                    console.warn('[video_url 변환 실패]', e);
+                }
+            }
 
             // 대기 영상 중지 플래그 설정
             shouldStopWaiting = true;
@@ -975,6 +1017,7 @@
 
         // 립싱크 비디오 로드 및 재생 함수
         function loadAndPlayLipsync(resultVideo, idleVideo, videoUrl, data) {
+            console.log('[loadAndPlayLipsync] 호출됨, videoUrl:', videoUrl);
             isVideoPlaying = true;
 
             // 이전 재생 중인 비디오 정리
@@ -1051,7 +1094,15 @@
                 });
             };
 
+            // 비디오 로드 오류 핸들러
+            resultVideo.onerror = (e) => {
+                console.error('[비디오 로드 오류]', e, resultVideo.error);
+                isVideoPlaying = false;
+                addMessage('system', '비디오 로드 실패: ' + (resultVideo.error?.message || '알 수 없는 오류'));
+            };
+
             // 비디오 로드 시작
+            console.log('[비디오 로드 시작]', videoUrl);
             resultVideo.load();
 
             // 립싱크 비디오 종료 처리 함수
@@ -1168,17 +1219,24 @@
         let streamAudioBuffer = null;    // 오디오 버퍼
         let streamAudioChunks = [];     // TTS 오디오 청크 배열
         let isStreamPlaying = false;     // 스트리밍 재생 중
-        let streamTotalFrames = 0;      // 전체 프레임 수
+        let streamPlaybackStarted = false; // 재생이 한 번이라도 시작되었는지 (이중 재생 방지)
+        let streamTotalFrames = 0;      // 전체 프레임 수 (립싱크 + 남은 원본)
+        let streamAudioFrames = 0;      // 오디오 기반 립싱크 프레임 수
         let streamSampleRate = 16000;   // 샘플레이트
+        let streamAudioEndTime = 0;     // 오디오 종료 시점 (performance.now)
+        let streamLastRenderedFrame = -1; // 마지막으로 렌더링된 프레임 인덱스
         const BUFFER_THRESHOLD = 15;    // 버퍼 임계값 (낮춤 - 빠른 재생 시작)
 
         socket.on('stream_start', (data) => {
             console.log('Stream start:', data);
-            resetStreamState();
+            // resetStreamState()는 sendMessage()/startInterview()에서 이미 호출됨
+            // 여기서 다시 호출하면 playCompleteAudio()가 설정한 streamAudio를 파괴함
             streamTotalFrames = data.total_frames;
+            streamAudioFrames = data.audio_frames || data.total_frames;
             streamFps = data.fps || 25;
+            isStreaming = true;  // 스트리밍 상태만 확인
             document.getElementById('statusText').textContent =
-                `스트리밍 시작 (${streamTotalFrames}프레임, ${streamFps}fps)`;
+                `스트리밍 시작 (${streamTotalFrames}프레임, 오디오:${streamAudioFrames}프레임, ${streamFps}fps)`;
         });
 
         // TTS 오디오 청크 스트리밍 수신
@@ -1196,11 +1254,8 @@
             // 빈 청크는 저장하지 않음 (완료 신호일 수 있음)
             if (data.audio && data.audio.length > 0) {
                 ttsAudioChunks.push(data.audio);
-
-                // 첫 청크가 도착하면 즉시 재생 시작 (스트리밍 효과)
-                if (ttsAudioChunks.length === 1 && !isStreamPlaying) {
-                    playFirstAudioChunk(data.audio);
-                }
+                // 첫 청크 즉시 재생은 비활성화 (이중 음성 + 립싱크 불일치 방지)
+                // 전체 오디오를 프레임과 동기화하여 재생
             }
 
             // 최종 청크인 경우 전체 오디오 재생
@@ -1216,21 +1271,24 @@
             // 이미 stream_audio_chunk에서 is_final=true로 처리됨
         });
 
+        // 첫 오디오 청크 임시 재생 트래킹
+        let firstChunkAudio = null;
+
         // 첫 오디오 청크 재생 (스트리밍 효과)
         function playFirstAudioChunk(firstChunkBase64) {
             try {
                 // 첫 청크를 즉시 재생
                 const audioUrl = 'data:audio/wav;base64,' + firstChunkBase64;
-                const tempAudio = new Audio(audioUrl);
-                tempAudio.preload = 'auto';
-                
-                tempAudio.oncanplaythrough = () => {
-                    tempAudio.play().catch(err => {
+                firstChunkAudio = new Audio(audioUrl);
+                firstChunkAudio.preload = 'auto';
+
+                firstChunkAudio.oncanplaythrough = () => {
+                    firstChunkAudio.play().catch(err => {
                         console.error('Failed to play first chunk:', err);
                     });
                 };
-                
-                tempAudio.load();
+
+                firstChunkAudio.load();
             } catch (err) {
                 console.error('Failed to play first audio chunk:', err);
             }
@@ -1274,7 +1332,19 @@
                     }
 
                     if (decodedBuffers.length === 0) {
-                        console.error('All chunks failed to decode');
+                        console.error('All chunks failed to decode, falling back to last chunk');
+                        // 디코딩 실패 시 마지막 청크를 직접 사용
+                        const lastChunk = validChunks[validChunks.length - 1];
+                        const fallbackUrl = 'data:audio/wav;base64,' + lastChunk;
+                        streamAudio = new Audio(fallbackUrl);
+                        streamAudio.preload = 'auto';
+                        audioContext.close();
+                        // fallback 후에도 재생 시도
+                        const fbCount = streamFrameBuffer.filter(f => f).length;
+                        console.log('Fallback streamAudio ready, frames:', fbCount);
+                        if (fbCount >= BUFFER_THRESHOLD && !isStreamPlaying) {
+                            startStreamPlayback();
+                        }
                         return;
                     }
 
@@ -1299,18 +1369,15 @@
                     audioContext.close();
                 }
 
-                // 버퍼가 충분하면 재생 시작
-                const bufferCount = streamFrameBuffer.filter(f => f).length;
-                if (bufferCount >= BUFFER_THRESHOLD && !isStreamPlaying) {
+                // streamAudio가 준비되었음을 표시 (stream_frame 핸들러에서 체크)
+                console.log('streamAudio ready, frames buffered:', streamFrameBuffer.filter(f => f).length);
+
+                // 버퍼가 충분하면 즉시 재생 시작
+                const currentBufferCount = streamFrameBuffer.filter(f => f).length;
+                if (currentBufferCount >= BUFFER_THRESHOLD && !isStreamPlaying) {
                     startStreamPlayback();
-                } else {
-                    // 버퍼가 부족해도 오디오는 준비
-                    streamAudio.oncanplaythrough = () => {
-                        if (!isStreamPlaying && bufferCount >= BUFFER_THRESHOLD) {
-                            startStreamPlayback();
-                        }
-                    };
                 }
+                // 버퍼가 부족해도 stream_frame 핸들러에서 streamAudio 체크하여 시작함
             } catch (err) {
                 console.error('Failed to create complete audio:', err);
             }
@@ -1414,20 +1481,42 @@
 
         // 스트리밍 재생 시작
         function startStreamPlayback() {
-            if (isStreamPlaying) return;
+            if (isStreamPlaying || streamPlaybackStarted) return;
             isStreamPlaying = true;
+            streamPlaybackStarted = true;
+
+            // 대기 영상 중지
+            shouldStopWaiting = true;
+            stopWaitingVideo();
 
             const canvas = document.getElementById('streamCanvas');
+            const resultVideo = document.getElementById('resultVideo');
 
-            console.log('Starting stream playback, buffer:', streamFrameBuffer.length);
+            console.log('Starting stream playback, buffer:', streamFrameBuffer.filter(f => f).length);
+
+            // 첫 청크 오디오 중지 (중복 재생 방지)
+            if (firstChunkAudio) {
+                firstChunkAudio.pause();
+                firstChunkAudio = null;
+            }
+
+            // resultVideo 숨기기 (대기 영상이 여기에 있을 수 있음)
+            resultVideo.style.opacity = '0';
+
+            // Canvas context 확인
+            if (!streamCtx) {
+                streamCtx = canvas.getContext('2d');
+            }
 
             // Canvas 표시 (idle은 CSS로 항상 opacity 1 유지)
             canvas.style.visibility = 'visible';
+            console.log('Canvas visible, size:', canvas.width, 'x', canvas.height, 'ctx:', !!streamCtx);
 
             document.getElementById('statusText').textContent = '재생 중...';
 
             // 오디오 재생
             streamAudio.play().then(() => {
+                console.log('Audio playing, duration:', streamAudio.duration, 'fps:', streamFps);
                 // 오디오 시간 기반 프레임 렌더링
                 renderStreamFrame();
             }).catch(err => {
@@ -1435,23 +1524,28 @@
                 isStreamPlaying = false;
             });
 
-            // 오디오 종료 시 canvas 숨기기 (idle은 CSS로 항상 opacity 1)
+            // 오디오 종료 시: 남은 원본 프레임이 있으면 계속 렌더링
             streamAudio.onended = () => {
-                console.log('Stream audio ended');
-                isStreamPlaying = false;
+                console.log('Stream audio ended, audioFrames:', streamAudioFrames, 'totalFrames:', streamTotalFrames);
 
-                const idleVideo = document.getElementById('idleVideo');
-                // idle 비디오 재생 확인
-                if (idleVideo.paused) {
-                    idleVideo.play().catch(err => console.error('Idle play failed:', err));
+                // 오디오 종료 시점 기록
+                streamAudioEndTime = performance.now();
+                // 마지막으로 렌더링된 오디오 프레임 인덱스 기록
+                const audioEndFrameIndex = Math.min(
+                    Math.floor(streamAudio.duration * streamFps),
+                    streamAudioFrames - 1
+                );
+                streamLastRenderedFrame = audioEndFrameIndex;
+
+                // 남은 원본 프레임이 있으면 계속 렌더링
+                if (streamTotalFrames > streamAudioFrames && streamLastRenderedFrame < streamTotalFrames - 1) {
+                    console.log(`오디오 종료, 남은 프레임 렌더링 시작: ${streamLastRenderedFrame + 1} ~ ${streamTotalFrames - 1}`);
+                    renderRemainingFrames();
+                } else {
+                    // 남은 프레임 없음 - 바로 페이드 아웃
+                    console.log('남은 프레임 없음, 페이드 아웃');
+                    fadeOutToIdle();
                 }
-
-                // canvas 숨기기 (idle은 이미 보임)
-                setTimeout(() => {
-                    if (!isStreamPlaying) {
-                        canvas.style.visibility = 'hidden';
-                    }
-                }, 100);
             };
         }
 
@@ -1470,14 +1564,69 @@
             requestAnimationFrame(renderStreamFrame);
         }
 
+        // 오디오 종료 후 남은 원본 프레임 렌더링 (FPS 기반 시간 진행)
+        function renderRemainingFrames() {
+            if (!streamCtx || !isStreamPlaying) return;
+
+            const elapsed = performance.now() - streamAudioEndTime;
+            const frameSincAudioEnd = Math.floor(elapsed / (1000 / streamFps));
+            const targetFrame = streamLastRenderedFrame + 1 + frameSincAudioEnd;
+
+            if (targetFrame >= streamTotalFrames) {
+                // 모든 프레임 렌더링 완료 - 마지막 프레임 표시 후 페이드 아웃
+                const lastIdx = streamTotalFrames - 1;
+                if (streamFrameBuffer[lastIdx]) {
+                    streamCtx.drawImage(streamFrameBuffer[lastIdx], 0, 0);
+                }
+                console.log('모든 프레임 렌더링 완료, 페이드 아웃');
+                fadeOutToIdle();
+                return;
+            }
+
+            // 프레임이 아직 도착하지 않은 경우 대기
+            if (streamFrameBuffer[targetFrame]) {
+                streamCtx.drawImage(streamFrameBuffer[targetFrame], 0, 0);
+            }
+
+            requestAnimationFrame(renderRemainingFrames);
+        }
+
+        // 캔버스 페이드 아웃 → idle 비디오 전환
+        // 마지막 프레임 = idle 첫 프레임이므로 페이드 없이 즉시 전환
+        function fadeOutToIdle() {
+            const canvas = document.getElementById('streamCanvas');
+            const idleVideo = document.getElementById('idleVideo');
+
+            // idle 비디오를 처음으로 리셋 후 즉시 전환
+            idleVideo.currentTime = 0;
+            if (idleVideo.paused) {
+                idleVideo.play().catch(err => console.error('Idle play failed:', err));
+            }
+
+            // canvas 즉시 숨기기
+            isStreamPlaying = false;
+            canvas.style.visibility = 'hidden';
+        }
+
         // 스트리밍 초기화 (새 요청 시)
         function resetStreamState() {
             streamFrameBuffer = [];
             streamAudio = null;
             isStreamPlaying = false;
+            streamPlaybackStarted = false;  // 재생 시작 플래그 초기화
+            streamTotalFrames = 0;
+            streamAudioFrames = 0;
+            streamAudioEndTime = 0;
+            streamLastRenderedFrame = -1;
             isStreaming = true;
             ttsAudioChunks = [];  // TTS 청크 초기화
             ttsAudioBlob = null;
+
+            // 첫 청크 오디오 정리
+            if (firstChunkAudio) {
+                firstChunkAudio.pause();
+                firstChunkAudio = null;
+            }
 
             const canvas = document.getElementById('streamCanvas');
             streamCtx = canvas.getContext('2d');
@@ -1490,26 +1639,52 @@
             isGenerating = false;
             updateUIState(false);
 
+            // 대기 영상 중지
+            shouldStopWaiting = true;
+            stopWaitingVideo();
+
             const elapsed = data.elapsed || data.total_time || 0;
+            document.getElementById('progressFill').style.width = '100%';
             document.getElementById('elapsedTime').textContent = `완료: ${elapsed.toFixed(1)}초`;
             document.getElementById('statsContainer').style.display = 'grid';
             document.getElementById('statTotal').textContent = elapsed.toFixed(1);
             document.getElementById('statusText').textContent =
                 `완료 (${data.total_frames}프레임, ${elapsed.toFixed(1)}초)`;
 
-            // 스트리밍 완료 후 canvas 숨기기 (idle은 CSS로 항상 opacity 1)
-            const canvas = document.getElementById('streamCanvas');
-            const idleVideo = document.getElementById('idleVideo');
-            // idle 비디오가 멈춰있으면 재생 시작
-            if (idleVideo.paused) {
-                idleVideo.play().catch(err => {
-                    console.error('Idle video play failed:', err);
-                });
+            // 스트리밍 재생이 아직 시작되지 않았으면 시작
+            if (!isStreamPlaying && streamAudio && streamFrameBuffer.filter(f => f).length > 0) {
+                startStreamPlayback();
+            } else if (!isStreamPlaying && !streamAudio) {
+                // streamAudio가 아직 준비되지 않음 (async 디코딩 중) - 대기 후 재시도
+                console.log('stream_complete: streamAudio not ready yet, waiting...');
+                const retryInterval = setInterval(() => {
+                    if (streamAudio && !isStreamPlaying) {
+                        clearInterval(retryInterval);
+                        if (streamFrameBuffer.filter(f => f).length > 0) {
+                            startStreamPlayback();
+                        }
+                    } else if (isStreamPlaying) {
+                        clearInterval(retryInterval);
+                    }
+                }, 100);
+                // 최대 5초 대기
+                setTimeout(() => clearInterval(retryInterval), 5000);
             }
-            // idle은 !important로 항상 보임 - opacity 변경 불필요
+
+            // 스트리밍 완료 후 canvas 숨기기는 오디오 종료 시(onended) 처리됨
+            // 재생이 한 번도 시작되지 않은 경우에만 fallback으로 canvas 숨기기
             setTimeout(() => {
-                canvas.style.visibility = 'hidden';
-            }, 100);
+                if (!isStreamPlaying && !streamPlaybackStarted) {
+                    const canvas = document.getElementById('streamCanvas');
+                    const idleVideo = document.getElementById('idleVideo');
+                    if (idleVideo.paused) {
+                        idleVideo.play().catch(err => {
+                            console.error('Idle video play failed:', err);
+                        });
+                    }
+                    canvas.style.visibility = 'hidden';
+                }
+            }, 3000);
         });
 
         socket.on('stream_error', (data) => {
@@ -1518,6 +1693,10 @@
             isGenerating = false;
             isStreamPlaying = false;
             updateUIState(false);
+
+            // 대기 영상 중지
+            shouldStopWaiting = true;
+            stopWaitingVideo();
 
             // canvas 숨기기 (idle은 CSS로 항상 opacity 1)
             const canvas = document.getElementById('streamCanvas');
@@ -1662,6 +1841,48 @@
             }
         }
 
+        // 채팅 모드 UI 업데이트
+        function updateChatModeUI() {
+            chatMode = document.getElementById('chatModeSelect').value;
+            const input = document.getElementById('chatInput');
+            const sendBtn = document.getElementById('sendBtn');
+            const startBtn = document.getElementById('startInterviewBtn');
+
+            if (chatMode === 'chat') {
+                input.placeholder = '면접자 답변을 입력하세요 (AI가 응답합니다)...';
+                sendBtn.textContent = '전송';
+                startBtn.textContent = '면접 시작';
+            } else {
+                input.placeholder = '아바타가 말할 대사를 입력하세요...';
+                sendBtn.textContent = '립싱크';
+                startBtn.textContent = '인사 영상';
+            }
+        }
+
+        // LLM 채팅 API 호출
+        async function callChatAPI(message, clearHistory = false) {
+            const systemPrompt = document.getElementById('promptTextarea').value ||
+                '당신은 친절하고 전문적인 AI 면접관입니다. 면접자의 답변에 대해 적절한 후속 질문을 하거나 피드백을 제공합니다. 응답은 2-3문장 정도로 간결하게 유지하세요.';
+
+            const response = await fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    message: message,
+                    sid: clientSid,
+                    system_prompt: systemPrompt,
+                    clear_history: clearHistory
+                })
+            });
+
+            const result = await response.json();
+            if (!response.ok || !result.success) {
+                throw new Error(result.error || 'LLM 요청 실패');
+            }
+
+            return result;
+        }
+
         // 메시지 전송
         async function sendMessage() {
             if (isGenerating) return;
@@ -1671,25 +1892,56 @@
 
             if (!message) return;
 
-            const avatarPath = 'auto';  // 자동 선택
+            // 소켓 연결 확인
+            if (!clientSid) {
+                addMessage('system', '서버와 연결 중입니다. 잠시 후 다시 시도해주세요.');
+                return;
+            }
 
-            // 입력된 텍스트를 아바타가 말할 대사로 사용 (LLM 제거됨)
-            addMessage('assistant', message);  // 아바타 대사로 표시
+            const avatarPath = 'auto';  // 자동 선택
             input.value = '';
 
             isGenerating = true;
             updateUIState(true);
             document.getElementById('progressContainer').style.display = 'block';
             document.getElementById('progressFill').style.width = '0%';
-            document.getElementById('statusText').textContent = '립싱크 생성 중...';
             document.getElementById('elapsedTime').textContent = '';
-            document.getElementById('statLLM').textContent = '-';  // LLM 없음
 
             // 대기 영상 시작
             startWaitingVideo();
 
+            let lipsyncText = message;  // 립싱크에 사용할 텍스트
+
             try {
-                // 립싱크 생성 (입력 텍스트를 직접 사용)
+                // 채팅 모드에 따른 처리
+                if (chatMode === 'chat') {
+                    // AI 대화 모드: 사용자 메시지 표시 후 LLM 호출
+                    addMessage('user', message);
+                    document.getElementById('statusText').textContent = 'AI 응답 생성 중...';
+
+                    const llmStart = performance.now();
+                    const chatResult = await callChatAPI(message);
+                    const llmElapsed = ((performance.now() - llmStart) / 1000).toFixed(1);
+
+                    lipsyncText = chatResult.response;
+                    if (!lipsyncText || !lipsyncText.trim()) {
+                        throw new Error('LLM 응답이 비어있습니다');
+                    }
+                    addMessage('assistant', lipsyncText);
+                    document.getElementById('statLLM').textContent = `${llmElapsed}초 (${chatResult.provider})`;
+                } else {
+                    // 직접 입력 모드: 입력 텍스트를 아바타 대사로 사용
+                    addMessage('assistant', message);
+                    document.getElementById('statLLM').textContent = '-';
+                }
+
+                if (!lipsyncText || !lipsyncText.trim()) {
+                    throw new Error('립싱크 텍스트가 비어있습니다');
+                }
+
+                document.getElementById('statusText').textContent = '립싱크 생성 중...';
+
+                // 립싱크 생성
                 const ttsEngine = document.getElementById('ttsEngineSelect').value;
                 const ttsVoice = document.getElementById('ttsVoiceSelect').value;
                 const resolution = document.getElementById('resolutionSelect').value;
@@ -1704,16 +1956,17 @@
                 };
                 const frameSkip = frameSkipMap[speedMode] || 2;
 
+                let response;
                 if (streamingMode) {
                     // 스트리밍 상태 초기화
                     resetStreamState();
                     document.getElementById('statusText').textContent = '스트리밍 생성 시작...';
-                    await fetch('/api/generate_streaming', {
+                    response = await fetch('/api/generate_streaming', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             avatar_path: avatarPath,
-                            text: message,  // 입력 텍스트 직접 사용
+                            text: lipsyncText,
                             tts_engine: ttsEngine,
                             tts_voice: ttsVoice,
                             sid: clientSid,
@@ -1724,12 +1977,12 @@
                 } else {
                     // 기존 API 사용 (일반 모드)
                     document.getElementById('statusText').textContent = '일반 모드 - 생성 중...';
-                    await fetch('/api/generate', {
+                    response = await fetch('/api/generate', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             avatar_path: avatarPath,
-                            text: message,  // 입력 텍스트 직접 사용
+                            text: lipsyncText,
                             tts_engine: ttsEngine,
                             tts_voice: ttsVoice,
                             sid: clientSid,
@@ -1739,11 +1992,20 @@
                     });
                 }
 
+                // API 응답 확인
+                const result = await response.json();
+                if (!response.ok || result.error) {
+                    throw new Error(result.error || '요청 실패');
+                }
+                console.log('API 요청 성공:', result);
+
             } catch (e) {
                 console.error('Send failed:', e);
-                addMessage('system', '오류가 발생했습니다.');
+                addMessage('system', '오류: ' + e.message);
+                stopWaitingVideo();
                 isGenerating = false;
                 updateUIState(false);
+                document.getElementById('progressContainer').style.display = 'none';
             }
         }
 
@@ -1759,11 +2021,31 @@
         async function startInterview() {
             if (isGenerating) return;
 
+            // 소켓 연결 확인
+            if (!clientSid) {
+                addMessage('system', '서버와 연결 중입니다. 잠시 후 다시 시도해주세요.');
+                return;
+            }
+
             const avatarPath = 'auto';  // 자동 선택
 
-            // 대화 초기화 (LLM 제거됨 - UI만 초기화)
+            // 대화 초기화
             const messagesDiv = document.getElementById('chatMessages');
-            messagesDiv.innerHTML = '<div class="chat-message system">면접이 시작되었습니다. 아래 입력창에 아바타가 말할 대사를 입력하세요.</div>';
+            if (chatMode === 'chat') {
+                messagesDiv.innerHTML = '<div class="chat-message system">면접이 시작되었습니다. AI 면접관이 질문하고 응답합니다.</div>';
+                // LLM 대화 히스토리 초기화
+                try {
+                    await fetch('/api/chat/clear', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ sid: clientSid })
+                    });
+                } catch (e) {
+                    console.warn('대화 히스토리 초기화 실패:', e);
+                }
+            } else {
+                messagesDiv.innerHTML = '<div class="chat-message system">면접이 시작되었습니다. 아바타가 말할 대사를 입력하세요.</div>';
+            }
 
             isGenerating = true;
             updateUIState(true);
@@ -1772,7 +2054,7 @@
             document.getElementById('progressFill').style.width = '0%';
             document.getElementById('statusText').textContent = '면접관 인사 생성 중...';
             document.getElementById('elapsedTime').textContent = '';
-            document.getElementById('statLLM').textContent = '-';  // LLM 없음
+            document.getElementById('statLLM').textContent = '-';
 
             try {
                 // 면접관 첫 인사 (고정 메시지)
@@ -1796,11 +2078,12 @@
                 };
                 const frameSkip = frameSkipMap[speedMode] || 2;
 
+                let response;
                 if (streamingMode) {
                     // 스트리밍 상태 초기화
                     resetStreamState();
                     document.getElementById('statusText').textContent = '스트리밍 생성 시작...';
-                    await fetch('/api/generate_streaming', {
+                    response = await fetch('/api/generate_streaming', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -1816,7 +2099,7 @@
                 } else {
                     // 기존 API 사용 (일반 모드)
                     document.getElementById('statusText').textContent = '일반 모드 - 생성 중...';
-                    await fetch('/api/generate', {
+                    response = await fetch('/api/generate', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -1831,20 +2114,49 @@
                     });
                 }
 
+                // API 응답 확인
+                const result = await response.json();
+                if (!response.ok || result.error) {
+                    throw new Error(result.error || '요청 실패');
+                }
+                console.log('API 요청 성공:', result);
+
             } catch (e) {
                 console.error('Start interview failed:', e);
-                addMessage('system', '면접 시작 중 오류가 발생했습니다.');
+                addMessage('system', '오류: ' + e.message);
                 isGenerating = false;
                 updateUIState(false);
                 document.getElementById('startInterviewBtn').disabled = false;
+                document.getElementById('progressContainer').style.display = 'none';
             }
         }
 
-        // 대화 초기화 (LLM 제거됨 - UI만 초기화)
-        function clearHistory() {
+        // 대화 초기화 (UI + LLM 히스토리)
+        async function clearHistory() {
             const messagesDiv = document.getElementById('chatMessages');
-            messagesDiv.innerHTML = '<div class="chat-message system">"면접 시작" 버튼을 눌러 면접을 시작하세요</div>';
-            document.getElementById('startInterviewBtn').disabled = false;
+
+            // LLM 대화 히스토리 초기화
+            if (clientSid && chatMode === 'chat') {
+                try {
+                    await fetch('/api/chat/clear', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ sid: clientSid })
+                    });
+                } catch (e) {
+                    console.warn('대화 히스토리 초기화 실패:', e);
+                }
+            }
+
+            if (clientSid) {
+                messagesDiv.innerHTML = '<div class="chat-message system">"면접 시작" 버튼을 눌러 면접을 시작하세요</div>';
+                document.getElementById('startInterviewBtn').disabled = false;
+                updateChatModeUI();  // 채팅 모드에 따라 버튼 텍스트 업데이트
+            } else {
+                messagesDiv.innerHTML = '<div class="chat-message system">서버에 연결 중입니다...</div>';
+            }
+            isGenerating = false;
+            updateUIState(false);
         }
 
         // ========== 프롬프트 설정 ==========

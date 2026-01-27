@@ -1,0 +1,28 @@
+# Cloudflare Tunnel 설정 파일
+# 사용법:
+# 1. cloudflared tunnel login (먼저 로그인)
+# 2. cloudflared tunnel create interview-avatar (터널 생성)
+# 3. 아래 설정에서 YOUR_TUNNEL_ID와 YOUR_DOMAIN을 수정
+# 4. cloudflared tunnel route dns interview-avatar api.yourdomain.com (DNS 라우팅)
+# 5. cloudflared tunnel --config cloudflared-config.yml run interview-avatar (실행)
+
+tunnel: YOUR_TUNNEL_ID  # cloudflared tunnel list 에서 확인
+credentials-file: C:\Users\User\.cloudflared\YOUR_TUNNEL_ID.json
+
+ingress:
+  # 메인 API 서버 (Flask + SocketIO)
+  - hostname: api.yourdomain.com  # 실제 도메인으로 변경
+    service: http://localhost:5000
+    originRequest:
+      noTLSVerify: true
+      connectTimeout: 30s
+
+  # WebSocket 지원 (SocketIO용)
+  - hostname: api.yourdomain.com
+    path: /socket.io/*
+    service: http://localhost:5000
+    originRequest:
+      noTLSVerify: true
+
+  # 기본 fallback (필수)
+  - service: http_status:404
