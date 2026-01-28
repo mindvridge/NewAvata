@@ -1,0 +1,71 @@
+# ==============================================
+# 립싱크 서버 의존성 (A100 GPU / CUDA 12.4)
+# ==============================================
+#
+# 설치 방법:
+# 1. Python 3.10 가상환경 생성:
+#    python3.10 -m venv venv
+#    source venv/bin/activate
+#
+# 2. PyTorch 먼저 설치 (CUDA 12.4):
+#    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+#
+# 3. 나머지 의존성 설치:
+#    pip install -r requirements_a100.txt
+#
+# ==============================================
+
+# Core ML libraries
+numpy<2.0.0
+scipy
+scikit-learn
+scikit-image
+matplotlib
+opencv-python==4.9.0.80
+einops==0.8.1
+omegaconf
+hydra-core
+
+# Audio processing
+librosa==0.10.2
+soundfile==0.12.1
+
+# Transformers & Diffusers
+transformers==4.51.3
+huggingface_hub
+diffusers==0.30.2
+accelerate==0.28.0
+safetensors
+
+# Whisper
+openai-whisper
+
+# Web server
+flask==3.0.0
+flask-socketio==5.3.6
+flask-cors==4.0.0
+python-dotenv
+requests
+gevent==23.9.1
+gevent-websocket==0.10.1
+openai
+
+# ONNX Runtime GPU (TensorRT 지원)
+# A100 (sm_80) + CUDA 12.4 호환
+onnxruntime-gpu==1.20.0
+onnx
+
+# Face detection & parsing
+face_alignment
+facexlib
+mediapipe
+
+# Video processing
+ffmpeg-python
+moviepy
+pydub
+imageio[ffmpeg]
+
+# Utilities
+tqdm
+pillow

@@ -61,6 +61,8 @@ models/
 *.pt
 *.ckpt
 *.safetensors
+*.engine
+*.onnx
 
 # Data and assets
 recordings/
