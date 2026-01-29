@@ -667,6 +667,7 @@
         <div class="tab-nav">
             <button class="tab-btn active" onclick="switchTab('single')">녹화</button>
             <button class="tab-btn" onclick="switchTab('uncached')">미캐시 항목</button>
+            <button class="tab-btn" onclick="switchTab('audioUncached')">음성 미캐시</button>
         </div>
 
         <!-- 단일 녹화 탭 -->
@@ -962,6 +963,108 @@
                 </div>
             </div>
         </div>
+
+        <!-- 음성 미캐시 탭 -->
+        <div id="audioUncachedTab" class="tab-content">
+            <div class="main-content">
+                <!-- 왼쪽: 필터 및 조회 -->
+                <div class="panel">
+                    <h2>🎤 음성 미캐시 항목 조회</h2>
+                    <p style="color: #888; margin-bottom: 15px;">아직 음성이 캐시되지 않은 표준멘트를 조회하고 TTS로 녹음합니다.</p>
+
+                    <div class="form-group">
+                        <label>카테고리 필터 (선택)</label>
+                        <select id="audioUncachedCategory">
+                            <option value="">전체</option>
+                            <option value="greeting">인사말 (greeting)</option>
+                            <option value="selfIntro">자기소개 (selfIntro)</option>
+                            <option value="transition">전환 (transition)</option>
+                            <option value="transition_silent">무음 전환 (transition_silent)</option>
+                            <option value="transition_followup">꼬리질문 전환 (transition_followup)</option>
+                            <option value="transition_timeout">시간초과 전환 (transition_timeout)</option>
+                            <option value="ending">종료 (ending)</option>
+                            <option value="followup_fallback">꼬리질문 폴백 (followup_fallback)</option>
+                        </select>
+                    </div>
+
+                    <button class="primary" id="queryAudioUncachedBtn" onclick="queryAudioUncachedItems()">
+                        🔍 음성 미캐시 항목 조회
+                    </button>
+
+                    <div class="tips" style="margin-top: 15px;">
+                        <h3>💡 TTS 녹음 설정</h3>
+                    </div>
+
+                    <div class="settings-row" style="margin-top: 10px;">
+                        <div class="form-group">
+                            <label>TTS 엔진</label>
+                            <select id="audioUncachedTtsEngine" onchange="updateAudioUncachedVoiceOptions()">
+                                <option value="">로딩 중...</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>음성</label>
+                            <select id="audioUncachedTtsVoice">
+                                <option value="">엔진 선택</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="batch-progress" id="audioUncachedBatchProgress">
+                        <div class="batch-progress-header">
+                            <span class="batch-progress-title">🎤 TTS 녹음 진행 중</span>
+                            <span class="batch-progress-count" id="audioUncachedProgressCount">0 / 0</span>
+                        </div>
+                        <div class="batch-progress-bar">
+                            <div class="batch-progress-fill" id="audioUncachedProgressFill"></div>
+                        </div>
+                        <div class="batch-progress-status" id="audioUncachedProgressStatus">준비 중...</div>
+                    </div>
+
+                    <!-- 오디오 미리듣기 -->
+                    <div style="margin-top: 15px; padding: 15px; background: rgba(255,255,255,0.05); border-radius: 8px;">
+                        <h3 style="color: #feca57; margin-bottom: 10px; font-size: 1em;">🔊 미리듣기</h3>
+                        <audio id="audioPreview" controls style="width: 100%;"></audio>
+                    </div>
+                </div>
+
+                <!-- 오른쪽: 음성 미캐시 항목 목록 -->
+                <div class="panel">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <h2 style="margin: 0;">🎤 음성 미캐시 목록</h2>
+                        <span id="audioUncachedCount" style="color: #888; font-size: 0.9em;">0개</span>
+                    </div>
+
+                    <div id="audioUncachedListEmpty" style="color: #888; text-align: center; padding: 40px;">
+                        조회 버튼을 클릭하여 음성 미캐시 항목을 불러오세요
+                    </div>
+
+                    <div class="batch-list" id="audioUncachedList" style="max-height: 500px; display: none;">
+                    </div>
+
+                    <div id="audioUncachedActions" style="display: none; margin-top: 15px;">
+                        <div class="settings-row">
+                            <button class="primary" id="recordAllAudioBtn" onclick="recordAllAudioUncached()">
+                                🚀 전체 TTS 녹음 시작
+                            </button>
+                            <button class="danger secondary" id="stopAudioRecordingBtn" onclick="stopAudioUncachedRecording()" disabled>
+                                ⏹ 중지
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="tips" style="margin-top: 15px; background: rgba(17, 153, 142, 0.1); border-color: rgba(17, 153, 142, 0.3);">
+                        <h3 style="color: #11998e;">📁 자동 캐시 업로드</h3>
+                        <ul>
+                            <li>TTS로 음성 생성 후 자동으로 캐시 서버에 업로드됩니다</li>
+                            <li>개별 항목의 "녹음" 버튼으로 단건 녹음 가능</li>
+                            <li>"전체 녹음"으로 모든 미캐시 항목 일괄 처리</li>
+                            <li>오류 발생 시 배치 자동 중지</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -979,6 +1082,13 @@
         let uncachedRunning = false;
         let uncachedResults = [];
         let uncachedBatchMode = false;  // 배치 모드 여부 (중지 후에도 유지)
+
+        // 음성 미캐시 녹음 관련 변수
+        let audioUncachedItems = [];
+        let audioUncachedCurrentIndex = 0;
+        let audioUncachedRunning = false;
+        let audioUncachedResults = [];
+        let audioUncachedBatchMode = false;
 
         // 초기화
         document.addEventListener('DOMContentLoaded', function() {
@@ -1189,9 +1299,11 @@
 
                 document.getElementById('ttsEngineSelect').innerHTML = engineOptions;
                 document.getElementById('uncachedTtsEngine').innerHTML = engineOptions;
+                document.getElementById('audioUncachedTtsEngine').innerHTML = engineOptions;
 
                 updateVoiceOptions();
                 updateUncachedVoiceOptions();
+                updateAudioUncachedVoiceOptions();
 
             } catch (error) {
                 console.error('옵션 로드 오류:', error);
@@ -2011,6 +2123,339 @@
             }).catch(err => {
                 console.error('복사 실패:', err);
             });
+        }
+
+        // ========== 음성 미캐시 기능 ==========
+
+        // 음성 미캐시용 음성 옵션 업데이트
+        function updateAudioUncachedVoiceOptions() {
+            const engineId = document.getElementById('audioUncachedTtsEngine').value;
+            const voiceSelect = document.getElementById('audioUncachedTtsVoice');
+            updateVoiceSelect(engineId, voiceSelect);
+        }
+
+        // 음성 미캐시 항목 조회
+        async function queryAudioUncachedItems() {
+            const category = document.getElementById('audioUncachedCategory').value;
+
+            // URL 파라미터 구성
+            const params = new URLSearchParams();
+            if (category) params.append('category', category);
+
+            document.getElementById('queryAudioUncachedBtn').disabled = true;
+            document.getElementById('queryAudioUncachedBtn').textContent = '조회 중...';
+
+            try {
+                // 로컬 프록시 사용 (CORS 우회)
+                const response = await fetch(`/api/proxy/audio-cache/uncached?${params.toString()}`);
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(result.error || `HTTP ${response.status}`);
+                }
+
+                // API 응답: { uncached: [...], uncached_count: N, cached_count: N }
+                audioUncachedItems = result.uncached || [];
+                console.log(`음성 미캐시 ${result.uncached_count || audioUncachedItems.length}개, 캐시됨 ${result.cached_count || 0}개`);
+                renderAudioUncachedList();
+
+            } catch (error) {
+                console.error('음성 미캐시 항목 조회 오류:', error);
+                alert('조회 실패: ' + error.message);
+            } finally {
+                document.getElementById('queryAudioUncachedBtn').disabled = false;
+                document.getElementById('queryAudioUncachedBtn').textContent = '🔍 음성 미캐시 항목 조회';
+            }
+        }
+
+        // 음성 미캐시 항목 목록 렌더링
+        function renderAudioUncachedList() {
+            const listEl = document.getElementById('audioUncachedList');
+            const emptyEl = document.getElementById('audioUncachedListEmpty');
+            const actionsEl = document.getElementById('audioUncachedActions');
+            const countEl = document.getElementById('audioUncachedCount');
+
+            countEl.textContent = `${audioUncachedItems.length}개`;
+
+            if (audioUncachedItems.length === 0) {
+                listEl.style.display = 'none';
+                emptyEl.style.display = 'block';
+                emptyEl.innerHTML = '<p style="color: #4caf50; text-align: center; padding: 40px;">🎉 모든 음성이 캐시되어 있습니다!</p>';
+                actionsEl.style.display = 'none';
+                return;
+            }
+
+            emptyEl.style.display = 'none';
+            listEl.style.display = 'block';
+            actionsEl.style.display = 'block';
+
+            listEl.innerHTML = audioUncachedItems.map((item, index) => {
+                return `
+                <div class="batch-item" id="audioUncachedItem${index}">
+                    <div class="number">${index + 1}</div>
+                    <div class="info">
+                        <div class="text">${escapeHtml(item.text)}</div>
+                        <div class="meta" id="audioUncachedMeta${index}">${item.category || ''}</div>
+                    </div>
+                    <div class="actions" id="audioUncachedActions${index}">
+                        <button class="primary" style="width:auto;padding:6px 12px;font-size:0.8em;" onclick="recordSingleAudioUncached(${index})">🎤 녹음</button>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        // 단일 음성 미캐시 항목 녹음
+        async function recordSingleAudioUncached(index) {
+            const item = audioUncachedItems[index];
+            if (!item) return;
+
+            // 해당 항목만 녹음 (자동 진행 없음)
+            audioUncachedRunning = false;  // 자동 진행 비활성화
+            audioUncachedBatchMode = true;  // 업로드 로직 사용
+            audioUncachedCurrentIndex = index;
+            audioUncachedResults = new Array(audioUncachedItems.length).fill(null);
+
+            updateAudioUncachedItemStatus(index, 'processing', '녹음 중...');
+
+            await processAudioUncachedItem(index);
+        }
+
+        // 전체 음성 미캐시 항목 녹음 시작
+        async function recordAllAudioUncached() {
+            if (audioUncachedItems.length === 0) {
+                alert('녹음할 항목이 없습니다.');
+                return;
+            }
+
+            audioUncachedRunning = true;
+            audioUncachedBatchMode = true;
+            audioUncachedCurrentIndex = 0;
+            audioUncachedResults = new Array(audioUncachedItems.length).fill(null);
+
+            document.getElementById('recordAllAudioBtn').disabled = true;
+            document.getElementById('stopAudioRecordingBtn').disabled = false;
+            document.getElementById('audioUncachedBatchProgress').classList.add('active');
+
+            // 모든 항목 대기 상태로 초기화
+            audioUncachedItems.forEach((item, index) => {
+                updateAudioUncachedItemStatus(index, '', '대기 중');
+            });
+
+            updateAudioUncachedProgress();
+            processNextAudioUncachedItem();
+        }
+
+        // 음성 미캐시 녹음 중지
+        function stopAudioUncachedRecording() {
+            audioUncachedRunning = false;
+            document.getElementById('stopAudioRecordingBtn').disabled = true;
+            document.getElementById('audioUncachedProgressStatus').textContent = '중지 요청됨... 현재 작업 완료 후 중지됩니다.';
+        }
+
+        // 다음 음성 미캐시 항목 처리
+        async function processNextAudioUncachedItem() {
+            if (!audioUncachedRunning || audioUncachedCurrentIndex >= audioUncachedItems.length) {
+                if (audioUncachedBatchMode) {
+                    finishAudioUncachedRecording();
+                }
+                return;
+            }
+            await processAudioUncachedItem(audioUncachedCurrentIndex);
+        }
+
+        // 음성 미캐시 항목 처리 (TTS 생성 + 업로드)
+        async function processAudioUncachedItem(index) {
+            const item = audioUncachedItems[index];
+            const text = item.text;
+            const category = item.category || '';
+
+            updateAudioUncachedItemStatus(index, 'processing', 'TTS 생성 중...');
+            document.getElementById('audioUncachedProgressStatus').textContent =
+                `[${index + 1}/${audioUncachedItems.length}] TTS 생성 중...`;
+
+            try {
+                const ttsEngine = document.getElementById('audioUncachedTtsEngine').value;
+                const ttsVoice = document.getElementById('audioUncachedTtsVoice').value;
+
+                // TTS API 호출
+                const ttsResponse = await fetch('/api/tts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        text: text,
+                        engine: ttsEngine,
+                        voice: ttsVoice
+                    })
+                });
+
+                if (!ttsResponse.ok) {
+                    const error = await ttsResponse.json();
+                    throw new Error(error.error || `TTS 실패: HTTP ${ttsResponse.status}`);
+                }
+
+                const ttsResult = await ttsResponse.json();
+
+                if (!ttsResult.success || !ttsResult.audio_url) {
+                    throw new Error(ttsResult.error || 'TTS 응답에 audio_url 없음');
+                }
+
+                console.log(`[음성 녹음] TTS 성공: ${ttsResult.audio_url}`);
+
+                // 음성 파일 다운로드
+                updateAudioUncachedItemStatus(index, 'processing', '음성 다운로드 중...');
+
+                let audioUrl = ttsResult.audio_url;
+                // 상대 경로로 변환
+                if (audioUrl.includes('://')) {
+                    const urlObj = new URL(audioUrl);
+                    audioUrl = urlObj.pathname;
+                }
+
+                const audioResponse = await fetch(audioUrl);
+                if (!audioResponse.ok) {
+                    throw new Error(`음성 다운로드 실패: ${audioResponse.status}`);
+                }
+                const audioBlob = await audioResponse.blob();
+                console.log(`[음성 녹음] 다운로드 완료: ${audioBlob.size} bytes`);
+
+                // 미리듣기 업데이트
+                const audioPreview = document.getElementById('audioPreview');
+                audioPreview.src = URL.createObjectURL(audioBlob);
+
+                // 캐시 서버에 업로드
+                updateAudioUncachedItemStatus(index, 'processing', '캐시 업로드 중...');
+                document.getElementById('audioUncachedProgressStatus').textContent =
+                    `[${index + 1}/${audioUncachedItems.length}] 캐시 업로드 중...`;
+
+                const formData = new FormData();
+                formData.append('text', text);
+                formData.append('audio', audioBlob, 'audio.mp3');
+                if (category) formData.append('category', category);
+
+                const uploadResponse = await fetch('/api/proxy/audio-cache/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const uploadResult = await uploadResponse.json();
+
+                if (!uploadResult.success) {
+                    throw new Error(uploadResult.error || '캐시 업로드 실패');
+                }
+
+                // 성공 처리 - 오디오 URL 저장
+                audioUncachedResults[index] = { success: true, audioUrl: audioUrl };
+                updateAudioUncachedItemStatus(index, 'completed', '완료 (캐시됨)', audioUrl);
+
+                // 다음 항목으로 진행
+                audioUncachedCurrentIndex++;
+                updateAudioUncachedProgress();
+
+                if (audioUncachedCurrentIndex < audioUncachedItems.length && audioUncachedRunning) {
+                    setTimeout(() => processNextAudioUncachedItem(), 300);
+                } else {
+                    finishAudioUncachedRecording();
+                }
+
+            } catch (error) {
+                const detailedError = error.message;
+                console.error(`[음성 배치 오류] 항목 ${index + 1}: ${detailedError}`);
+
+                audioUncachedResults[index] = {
+                    success: false,
+                    error: detailedError
+                };
+                updateAudioUncachedItemStatus(index, 'error', detailedError);
+
+                if (audioUncachedBatchMode) {
+                    updateAudioUncachedProgress();
+
+                    // 배치 중지 (다음 항목으로 진행하지 않음)
+                    document.getElementById('audioUncachedProgressStatus').textContent =
+                        `❌ 오류로 중지됨: ${detailedError}`;
+                    console.error(`[음성 배치 중지] 항목 ${index + 1}에서 오류 발생`);
+                    finishAudioUncachedRecording();
+                }
+            }
+        }
+
+        // 음성 미캐시 항목 상태 업데이트
+        function updateAudioUncachedItemStatus(index, status, message, audioUrl = null) {
+            const item = document.getElementById(`audioUncachedItem${index}`);
+            const meta = document.getElementById(`audioUncachedMeta${index}`);
+            const actions = document.getElementById(`audioUncachedActions${index}`);
+
+            if (!item) return;
+
+            item.className = `batch-item ${status}`;
+            if (message) {
+                const originalMeta = audioUncachedItems[index];
+                const categoryInfo = originalMeta.category || '';
+                meta.textContent = status ? message : categoryInfo;
+            }
+
+            if (status === 'completed') {
+                // audioUrl이 있으면 재생 버튼 표시
+                if (audioUrl) {
+                    actions.innerHTML = `
+                        <button class="btn-play" style="width:auto;padding:6px 12px;font-size:0.8em;" onclick="playAudioUncached('${audioUrl}')">▶️</button>
+                        <span style="color: #4caf50; font-size: 0.8em;">✓ 캐시됨</span>
+                    `;
+                } else {
+                    actions.innerHTML = `
+                        <span style="color: #4caf50; font-size: 0.8em;">✓ 캐시됨</span>
+                    `;
+                }
+            } else if (status === 'error') {
+                actions.innerHTML = `
+                    <button class="primary" style="width:auto;padding:6px 12px;font-size:0.8em;" onclick="recordSingleAudioUncached(${index})">재시도</button>
+                `;
+            } else if (!status) {
+                actions.innerHTML = `
+                    <button class="primary" style="width:auto;padding:6px 12px;font-size:0.8em;" onclick="recordSingleAudioUncached(${index})">🎤 녹음</button>
+                `;
+            }
+        }
+
+        // 음성 미캐시 오디오 재생
+        function playAudioUncached(audioUrl) {
+            // 상대 경로로 변환 (필요 시)
+            let localUrl = audioUrl;
+            if (audioUrl.includes('://')) {
+                const urlObj = new URL(audioUrl);
+                localUrl = urlObj.pathname;
+            }
+
+            const audioPreview = document.getElementById('audioPreview');
+            audioPreview.src = localUrl + '?' + Date.now();
+            audioPreview.load();
+            audioPreview.play();
+        }
+
+        // 음성 미캐시 진행률 업데이트
+        function updateAudioUncachedProgress() {
+            const completed = audioUncachedResults.filter(r => r !== null).length;
+            const total = audioUncachedItems.length;
+            const percent = total > 0 ? (completed / total * 100) : 0;
+
+            document.getElementById('audioUncachedProgressCount').textContent = `${completed} / ${total}`;
+            document.getElementById('audioUncachedProgressFill').style.width = `${percent}%`;
+        }
+
+        // 음성 미캐시 녹음 완료
+        function finishAudioUncachedRecording() {
+            audioUncachedRunning = false;
+            audioUncachedBatchMode = false;
+
+            document.getElementById('recordAllAudioBtn').disabled = false;
+            document.getElementById('stopAudioRecordingBtn').disabled = true;
+
+            const successCount = audioUncachedResults.filter(r => r && r.success).length;
+            const errorCount = audioUncachedResults.filter(r => r && !r.success).length;
+
+            document.getElementById('audioUncachedProgressStatus').textContent =
+                `완료! 성공: ${successCount}개, 실패: ${errorCount}개`;
         }
     </script>
 </body>

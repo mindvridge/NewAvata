@@ -2064,6 +2064,100 @@ def api_check_cosyvoice():
     return jsonify(result)
 
 
+# ===== TTS 단독 API =====
+@app.route('/api/tts', methods=['POST'])
+def api_tts():
+    """
+    TTS 음성 생성 API (단독 사용)
+
+    Request:
+        {
+            "text": "텍스트 내용",
+            "engine": "cosyvoice" | "qwen3tts" | "elevenlabs",
+            "voice": "음성 ID (선택)"
+        }
+
+    Response:
+        {
+            "success": true,
+            "audio_url": "/audio/tts_xxxxx.wav",
+            "duration": 3.5
+        }
+    """
+    import soundfile as sf
+    import uuid
+
+    data = request.json or {}
+    text = data.get('text', '').strip()
+    engine = data.get('engine', 'cosyvoice')
+    voice = data.get('voice', '')
+
+    if not text:
+        return jsonify({'success': False, 'error': '텍스트가 비어있습니다'}), 400
+
+    if len(text) > 1000:
+        return jsonify({'success': False, 'error': '텍스트가 너무 깁니다 (1000자 제한)'}), 400
+
+    try:
+        print(f"[TTS API] 요청: engine={engine}, voice={voice}, text={text[:50]}...")
+
+        # TTS 생성
+        result = generate_tts_audio(text, engine, voice)
+
+        if result is None:
+            return jsonify({'success': False, 'error': 'TTS 생성 실패'}), 500
+
+        audio_numpy, sample_rate = result
+
+        # 파일명 생성
+        filename = f"tts_{uuid.uuid4().hex[:8]}.wav"
+        output_dir = Path(VIDEO_CLEANUP_DIR)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / filename
+
+        # 오디오 저장
+        sf.write(str(output_path), audio_numpy, sample_rate)
+
+        # 오디오 길이 계산
+        duration = len(audio_numpy) / sample_rate
+
+        audio_url = f"/audio/{filename}"
+
+        # LIPSYNC_BASE_URL 설정 시 전체 URL 반환
+        if LIPSYNC_BASE_URL:
+            audio_url = f"{LIPSYNC_BASE_URL}{audio_url}"
+
+        print(f"[TTS API] 생성 완료: {output_path}, 길이: {duration:.2f}초")
+
+        return jsonify({
+            'success': True,
+            'audio_url': audio_url,
+            'duration': round(duration, 2)
+        })
+
+    except Exception as e:
+        print(f"[TTS API] 오류: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# 오디오 파일 서빙 라우트
+@app.route('/audio/<filename>')
+def serve_audio(filename):
+    """TTS 오디오 파일 서빙"""
+    # 보안: 파일명에 경로 탐색 방지
+    if '..' in filename or '/' in filename or '\\' in filename:
+        return jsonify({'error': '잘못된 파일명'}), 400
+
+    # 임시 출력 디렉토리에서 찾기
+    audio_path = Path(VIDEO_CLEANUP_DIR) / filename
+    if audio_path.exists():
+        return send_file(str(audio_path), mimetype='audio/wav')
+
+    return jsonify({'error': '파일을 찾을 수 없습니다'}), 404
+
+
 # ===== LLM 채팅 API =====
 @app.route('/api/chat', methods=['POST'])
 def api_chat():
@@ -2900,9 +2994,10 @@ def generate_tts_audio_streaming(text, engine, voice, chunk_callback, output_pat
                 try:
                     payload = {
                         "text": text_chunk,
-                        "language": "Auto",
+                        "language": "Korean",
                         "ref_audio": QWEN3_TTS_REF_AUDIO,
-                        "ref_text": QWEN3_TTS_REF_TEXT
+                        "ref_text": QWEN3_TTS_REF_TEXT,
+                        "split_sentences": False  # 청크 단위이므로 분할 불필요
                     }
 
                     response = tts_http_session.post(
@@ -3435,9 +3530,10 @@ def _generate_qwen3tts_chunk(text, model_size='0.6b', max_retries=3):
         try:
             payload = {
                 "text": text,
-                "language": "Auto",
+                "language": "Korean",
                 "ref_audio": QWEN3_TTS_REF_AUDIO,
-                "ref_text": QWEN3_TTS_REF_TEXT
+                "ref_text": QWEN3_TTS_REF_TEXT,
+                "split_sentences": False  # 청크 단위이므로 분할 불필요
             }
 
             response = tts_http_session.post(
@@ -4910,6 +5006,85 @@ def proxy_video_cache_upload():
         print("[프록시 업로드] 타임아웃")
         return jsonify({"success": False, "error": "업로드 타임아웃"}), 504
     except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ===== 음성 캐시 API 프록시 =====
+AUDIO_CACHE_API_URL = "https://mindprep.co.kr/api/audio-cache"
+# 동일한 API 키 사용
+AUDIO_CACHE_API_KEY = VIDEO_CACHE_API_KEY
+
+@app.route('/api/proxy/audio-cache/uncached', methods=['GET'])
+def proxy_audio_cache_uncached():
+    """음성 미캐시 항목 조회 프록시"""
+    try:
+        # 쿼리 파라미터 전달
+        params = request.args.to_dict()
+        print(f"[음성 프록시] 미캐시 조회 요청: {params}")
+
+        response = requests.get(
+            f"{AUDIO_CACHE_API_URL}/uncached",
+            params=params,
+            headers={"X-API-Key": AUDIO_CACHE_API_KEY},
+            timeout=30
+        )
+
+        result = response.json()
+        print(f"[음성 프록시] API 응답 상태: {response.status_code}")
+        if isinstance(result, dict):
+            print(f"[음성 프록시] 응답 키: {list(result.keys())}")
+            if 'uncached' in result:
+                print(f"[음성 프록시] uncached 개수: {len(result.get('uncached', []))}")
+
+        return jsonify(result), response.status_code
+
+    except requests.Timeout:
+        return jsonify({"success": False, "error": "API 요청 타임아웃"}), 504
+    except Exception as e:
+        print(f"[음성 프록시] 오류: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/proxy/audio-cache/upload', methods=['POST'])
+def proxy_audio_cache_upload():
+    """음성 캐시 업로드 프록시"""
+    try:
+        # multipart form data 전달
+        files = {}
+        data = {}
+
+        # 파일 처리
+        if 'audio' in request.files:
+            audio_file = request.files['audio']
+            file_content = audio_file.read()
+            files['audio'] = (audio_file.filename or 'audio.mp3', file_content, audio_file.content_type or 'audio/mpeg')
+            print(f"[음성 프록시 업로드] 파일 수신: {audio_file.filename}, 크기: {len(file_content)} bytes")
+        else:
+            print("[음성 프록시 업로드] 경고: 음성 파일 없음")
+
+        # 폼 데이터 처리
+        for key in request.form:
+            data[key] = request.form[key]
+        print(f"[음성 프록시 업로드] 폼 데이터: {data}")
+
+        response = requests.post(
+            f"{AUDIO_CACHE_API_URL}/upload",
+            files=files,
+            data=data,
+            headers={"X-API-Key": AUDIO_CACHE_API_KEY},
+            timeout=120  # 음성 업로드는 2분 타임아웃
+        )
+
+        result = response.json()
+        print(f"[음성 프록시 업로드] 응답: {response.status_code}, success={result.get('success')}")
+
+        return jsonify(result), response.status_code
+
+    except requests.Timeout:
+        print("[음성 프록시 업로드] 타임아웃")
+        return jsonify({"success": False, "error": "업로드 타임아웃"}), 504
+    except Exception as e:
+        print(f"[음성 프록시 업로드] 오류: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
