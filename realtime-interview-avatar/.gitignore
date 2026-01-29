@@ -71,9 +71,12 @@ tmp/
 temp/
 *.wav
 *.mp3
-*.mp4
 *.avi
 *.mov
+
+# 영상 파일 (assets/는 허용)
+*.mp4
+!assets/**/*.mp4
 
 # Jupyter Notebook
 .ipynb_checkpoints
@@ -96,6 +99,9 @@ assets/images/*
 !assets/images/.gitkeep
 assets/audio/*
 !assets/audio/.gitkeep
+
+# results 폴더 (생성 결과물)
+results/
 
 # 추가 환경 변수 파일
 .env.production

@@ -56,9 +56,12 @@ Thumbs.db
 # Output
 results/
 output/
-*.mp4
 *.wav
 *.mp3
+
+# 영상 파일 (assets/는 허용)
+*.mp4
+!realtime-interview-avatar/assets/**/*.mp4
 
 # Env
 .env
