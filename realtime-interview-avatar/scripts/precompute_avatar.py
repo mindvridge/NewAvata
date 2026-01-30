@@ -19,8 +19,35 @@ from tqdm import tqdm
 import argparse
 import time
 
-# MuseTalk 경로 추가
-MUSETALK_PATH = Path("c:/NewAvata/NewAvata/MuseTalk")
+# MuseTalk 경로 자동 탐지 (Linux/Windows 호환)
+def find_musetalk_path():
+    """MuseTalk 경로를 자동으로 찾습니다."""
+    # 환경변수 우선
+    if os.environ.get('MUSETALK_PATH'):
+        return Path(os.environ['MUSETALK_PATH'])
+
+    # 스크립트 기준 상대 경로들
+    script_dir = Path(__file__).resolve().parent
+    project_root = script_dir.parent.parent  # NewAvata/
+
+    possible_paths = [
+        project_root / "MuseTalk",                    # NewAvata/MuseTalk
+        script_dir.parent.parent.parent / "MuseTalk", # 상위 디렉토리
+        Path.home() / "MuseTalk",                     # ~/MuseTalk
+        Path("/home/elicer/MuseTalk"),                # 엘리스 클라우드 기본 경로
+        Path("c:/NewAvata/NewAvata/MuseTalk"),        # Windows 로컬
+    ]
+
+    for path in possible_paths:
+        if path.exists() and (path / "musetalk").exists():
+            return path
+
+    # 찾지 못한 경우 기본값 (에러 발생 시 명확한 메시지)
+    print("[WARNING] MuseTalk 경로를 찾을 수 없습니다. MUSETALK_PATH 환경변수를 설정하세요.")
+    return project_root / "MuseTalk"
+
+MUSETALK_PATH = find_musetalk_path()
+print(f"[INFO] MuseTalk 경로: {MUSETALK_PATH}")
 sys.path.insert(0, str(MUSETALK_PATH))
 
 import face_alignment
@@ -233,5 +260,10 @@ if __name__ == "__main__":
         if args.face_index.isdigit():
             args.face_index = int(args.face_index)
 
-    os.chdir("c:/NewAvata/NewAvata/realtime-interview-avatar")
+    # 스크립트 위치 기준으로 작업 디렉토리 설정 (Linux/Windows 호환)
+    script_dir = Path(__file__).resolve().parent
+    project_dir = script_dir.parent  # realtime-interview-avatar/
+    os.chdir(project_dir)
+    print(f"[INFO] 작업 디렉토리: {project_dir}")
+
     precompute_avatar(args)
